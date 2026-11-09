@@ -354,6 +354,8 @@ def main():
           and "对接配置清单" in html
           and payload["merchant_id"] in html)
     check("文档页无演示内容", "演示模式" not in html and "模拟支付" not in html)
+    check("文档说明 notify_url 归属",
+          "notify_url 怎么填" in html and "不是本系统地址" in html)
 
     r = c.get("/health")
     check("安全响应头", r.headers.get("X-Content-Type-Options") == "nosniff")

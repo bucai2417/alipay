@@ -20,6 +20,7 @@
     <a href="#api-orders">批量订单 orders</a>
     <a href="#api-submit">创建支付 submit</a>
     <a href="#api-notify">支付通知 notify</a>
+    <a href="#notify-url">notify_url 怎么填</a>
     <a href="#api-health">健康检查</a>
     <div class="sep"></div>
     <a href="#quickstart">快速接入代码</a>
@@ -34,6 +35,8 @@
     <section class="card doc-card" id="overview">
       <h2>接入概览</h2>
       <p>外部站点通过本系统的码支付网关创建支付订单，用户扫码付款后，系统自动查询支付宝账单并回调商户。协议与主流码支付网关兼容。</p>
+      <p class="small muted">注意区分：<span class="inline-code">/api/codepay</span> 是本系统的收款/下单入口；
+        <span class="inline-code">notify_url</span> 是对接方自己的回调接收地址，二者不要混淆。</p>
 
       <div class="grid-2 mt16">
         <div>
@@ -102,7 +105,8 @@
             <li>转账链接模式填写收款账号 userId；经营码模式上传收款二维码；</li>
             <li>点击「自动生成商户凭据」并保存 pid / key，提供给对接方；</li>
             <li>支付宝开放平台开通「账户账单查询」权限，保持监控运行；</li>
-            <li>服务器出网正常（用于查询支付宝账单与发送回调）。</li>
+            <li>服务器出网正常（用于查询支付宝账单与发送回调）；</li>
+            <li><b>本系统不需要填写 notify_url</b>：自带商城订单在系统内发货并发邮件。</li>
           </ul>
         </div>
         <div>
@@ -110,11 +114,21 @@
           <ul>
             <li>配置本系统接入地址（Base URL）；</li>
             <li>配置本系统生成的商户 ID（pid）与商户密钥（key）；</li>
-            <li>提供公网可达的 <span class="inline-code">notify_url</span>（POST 表单，返回 <span class="inline-code">success</span>）；</li>
+            <li>提供<b>你自己的站点</b>上的回调接收地址 <span class="inline-code">notify_url</span>
+              （公网可达，接收 POST 表单并返回 <span class="inline-code">success</span>）。
+              这个地址不是本系统地址。</li>
             <li><span class="inline-code">return_url</span> 可选，用于支付完成后跳转；</li>
             <li>按签名规则生成 <span class="inline-code">sign</span>，创建支付时传 <span class="inline-code">type=alipay</span>、订单号、名称、金额。</li>
           </ul>
         </div>
+      </div>
+
+      <div class="hint-box mt16">
+        <b>notify_url 是对接方的地址，不是本系统地址。</b>
+        调用 <span class="inline-code">act=submit</span> 创建支付时传入，例如
+        <span class="inline-code">notify_url=https://your-site.com/pay/notify</span>；
+        本系统的 <span class="inline-code">/api/codepay</span> 是下单入口，<b>不要</b>填在这里。
+        仅使用自带商城时无需配置该项。
       </div>
 
       <h3>上线检查</h3>
@@ -224,12 +238,21 @@ def generate_sign(params: dict, merchant_key: str) -> str:
           <tr><td><code>name</code></td><td>string</td><td class="required">是</td><td>商品名称</td></tr>
           <tr><td><code>money</code></td><td>string</td><td class="required">是</td><td>金额，最多两位小数</td></tr>
           <tr><td><code>sign</code></td><td>string</td><td class="required">是</td><td>MD5 签名（见上）</td></tr>
-          <tr><td><code>notify_url</code></td><td>string</td><td class="optional">否</td><td>支付成功回调地址，GET/POST 均可</td></tr>
+          <tr><td><code>notify_url</code></td><td>string</td><td class="optional">否（需要回调时填）</td>
+            <td><b>你的站点</b>接收支付结果的地址（不是本系统地址），例如
+              <code>https://your-site.com/pay/notify</code>。需公网可达、接收 POST 表单并返回
+              <code>success</code>；不填则支付成功后不回调。</td></tr>
           <tr><td><code>return_url</code></td><td>string</td><td class="optional">否</td><td>支付完成跳转地址</td></tr>
           <tr><td><code>sitename</code></td><td>string</td><td class="optional">否</td><td>站点名称</td></tr>
           <tr><td><code>format</code></td><td>string</td><td class="optional">否</td><td><code>json</code> 返回 JSON；默认重定向到支付页</td></tr>
         </tbody>
       </table>
+      <div class="hint-box mt8">
+        <b>notify_url 填什么？</b>填写你自己的服务器接收地址，例如
+        <span class="inline-code">https://your-site.com/pay/notify</span>，<b>不是本系统地址</b>。
+        本系统的 <span class="inline-code">/api/codepay</span> 是创建支付的入口，不能作为回调地址。
+        详细说明见下方「notify_url 怎么填」。
+      </div>
       <h3>请求示例</h3>
       <div class="tabs">
         <button class="tab active" data-target="codeExample" data-view="form">字符格式</button>
@@ -261,13 +284,29 @@ def generate_sign(params: dict, merchant_key: str) -> str:
   "business_qr_mode": false
 }</code></pre>
       <p class="small muted mt8">HTTP 表单提交（不带 <span class="inline-code">format=json</span>）成功时 302 跳转到
-        <span class="inline-code">/pay/&lt;trade_no&gt;</span> 支付页；API 调用请传 <span class="inline-code">format=json</span>。</p>
+        <span class="inline-code">/pay/&lt;trade_no&gt;</span> 支付页；API 调用请传
+        <span class="inline-code">format=json</span>。示例中的 <span class="inline-code">your-site.com</span>
+        是你自己的服务器域名，不要替换成本系统域名。</p>
     </section>
 
     <!-- notify -->
     <section class="card doc-card" id="api-notify">
       <h2><span class="method post">POST</span> 支付通知（商户回调）</h2>
-      <p>用户支付成功后，系统向商户的 <span class="inline-code">notify_url</span> 发送通知。商户需校验 <code>sign</code>，返回纯文本 <span class="inline-code">success</span> 表示已收到。</p>
+      <p>支付成功后，<b>本系统会主动向你的 <span class="inline-code">notify_url</span> 发起 POST 请求</b>（这个地址不是本系统地址），把支付结果通知给你。商户需校验 <code>sign</code>，返回纯文本 <span class="inline-code">success</span> 表示已收到。</p>
+      <div class="hint-box">
+        <b>notify_url 的填写位置：</b>调用 <span class="inline-code">act=submit</span> 创建支付时传入，例如
+        <span class="inline-code">notify_url=https://your-site.com/pay/notify</span>。
+        它是<b>你自己的服务器</b>上的回调接收地址；本系统的 <span class="inline-code">/api/codepay</span>
+        是下单入口，<b>不要</b>填在这里。
+      </div>
+      <h3 id="notify-url">notify_url 怎么填</h3>
+      <ul>
+        <li>必须是<b>你的服务端接收地址</b>，公网可访问（本系统服务器能请求到）；</li>
+        <li>接收方式：POST 表单；处理时校验 <span class="inline-code">sign</span>；成功后输出纯文本 <span class="inline-code">success</span>；</li>
+        <li>本机开发需使用内网穿透（frp / Cloudflare Tunnel / ngrok 等）获得公网地址；</li>
+        <li><b>只用本系统自带商城时不需要 notify_url</b>：订单在系统内发货并发送邮件，后台显示“无需回调”。</li>
+      </ul>
+      <h3>回调字段</h3>
       <table class="param-table">
         <thead><tr><th>字段</th><th>说明</th></tr></thead>
         <tbody>
@@ -281,6 +320,15 @@ def generate_sign(params: dict, merchant_key: str) -> str:
           <tr><td><code>sign / sign_type</code></td><td>MD5 签名，sign_type=MD5</td></tr>
         </tbody>
       </table>
+      <h3>常见错误</h3>
+      <ul>
+        <li>把 <span class="inline-code">notify_url</span> 填成本系统地址或 <span class="inline-code">/api/codepay</span>：
+          那是下单入口，不是回调接收端。</li>
+        <li>填 <span class="inline-code">localhost</span> / <span class="inline-code">127.0.0.1</span>：
+          生产环境本系统无法访问你本机的内网地址。</li>
+        <li>接收端不返回 <span class="inline-code">success</span>：系统会按 1/5/15/30/60 分钟重试。</li>
+        <li>不传 <span class="inline-code">notify_url</span>：支付成功后不回调，后台显示“无需回调”（自带商城属于这种情况）。</li>
+      </ul>
       <h3>重试机制</h3>
       <ul>
         <li>商户返回 <span class="inline-code">success</span>（小写）即视为成功；其他内容或非 2xx 视为失败。</li>
@@ -314,6 +362,7 @@ params = {
     "out_trade_no": "ORDER20260101001",
     "name": "测试商品",
     "money": "1.00",
+    # 你的服务器回调地址（不是本系统地址）
     "notify_url": "https://your-site.com/pay/notify",
 }
 
@@ -330,6 +379,9 @@ print(resp)
 # 轮询订单状态
 r = requests.get(BASE + "/api/codepay/status/" + params["out_trade_no"]).json()
 print(r["status"])  # 0 待支付 1 已支付 2 已过期</code><button class="copy-code" data-target="quickPy">复制</button></pre>
+      <p class="small muted mt8">把 <span class="inline-code">notify_url</span> 换成你自己的公网接收端；
+        本系统不会请求自己的 <span class="inline-code">/api/codepay</span> 作为回调地址。
+        只使用自带商城时可以不传 notify_url。</p>
     </section>
 
     <!-- 回调验签 -->
@@ -363,6 +415,7 @@ def notify():
     <section class="card doc-card" id="builder">
       <h2>参数拼装 / 签名生成</h2>
       <p>填写参数后自动补全 <span class="inline-code">pid</span> 并计算 <span class="inline-code">sign</span>，生成可直接用于联调的字符或 JSON 参数。<b>此操作不会创建订单。</b></p>
+      <p class="small muted"><span class="inline-code">notify_url</span> 请填写你自己的回调接收地址（不是本系统地址）。</p>
       <div class="try-grid mt16">
         <div class="try-form">
           <label class="field"><span>接口 act</span>
@@ -383,8 +436,8 @@ def notify():
           <label class="field" data-bacts="submit"><span>money 金额</span>
             <input id="bMoney" value="1.00">
           </label>
-          <label class="field" data-bacts="submit"><span>notify_url（可选）</span>
-            <input id="bNotifyUrl" placeholder="https://your-site.com/pay/notify">
+          <label class="field" data-bacts="submit"><span>notify_url（你的回调地址，可选）</span>
+            <input id="bNotifyUrl" placeholder="https://你的站点/pay/notify">
           </label>
           <label class="field" data-bacts="orders"><span>limit 条数</span>
             <input id="bLimit" type="number" value="20">
@@ -407,6 +460,7 @@ def notify():
     <section class="card doc-card" id="try">
       <h2>在线调试</h2>
       <p>服务端自动补全 <span class="inline-code">pid</span> 并计算签名。默认在服务内部直接执行（快速稳定）；勾选「通过 HTTP 发送」会请求本服务的 <span class="inline-code">/api/codepay</span>，验证完整链路（路由、验签、状态码、耗时）。</p>
+      <p class="small muted"><span class="inline-code">notify_url</span> 需要指向你自己的接收端，本系统会真实 POST 到该地址；不要填成本系统地址。</p>
       <p class="small muted">注意：<b>submit</b> 会真实创建订单，<b>notify</b> 会把订单标记为已支付（商城订单会立即发货），请谨慎操作。</p>
       <div class="try-grid mt16">
         <div class="try-form">
@@ -430,8 +484,8 @@ def notify():
           <label class="field" data-acts="submit"><span>money 金额</span>
             <input id="tryMoney" value="0.01">
           </label>
-          <label class="field" data-acts="submit"><span>notify_url（可选）</span>
-            <input id="tryNotifyUrl" placeholder="https://your-site.com/pay/notify">
+          <label class="field" data-acts="submit"><span>notify_url（你的回调地址，可选）</span>
+            <input id="tryNotifyUrl" placeholder="https://你的站点/pay/notify">
           </label>
           <label class="field" data-acts="submit"><span>return_url（可选）</span>
             <input id="tryReturnUrl" placeholder="https://your-site.com/pay/return">

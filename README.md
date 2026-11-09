@@ -146,6 +146,9 @@ print(r.json())
 
 ### 商户回调
 
+`notify_url` 是**对接方自己的回调接收地址**，不是本系统地址；在调用 `act=submit` 时传入，例如
+`notify_url=https://your-site.com/pay/notify`。本系统自带商城的订单不需要该字段（支付成功后内部发货并发送邮件）。
+
 支付成功后系统向 `notify_url` 发送 POST 表单：
 
 | 字段 | 说明 |
