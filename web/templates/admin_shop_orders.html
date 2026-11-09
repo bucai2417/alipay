@@ -1,7 +1,7 @@
 {% extends "admin_base.html" %}
 {% block title %}商城订单 - 管理后台{% endblock %}
 {% block heading %}商城订单{% endblock %}
-{% block subheading %}下单、支付与自动发货记录{% endblock %}
+{% block subheading %}下单、支付与自动发货记录，可批量补单/清理{% endblock %}
 {% block head_actions %}
   <button class="btn" id="exportBtn">导出 CSV</button>
   <button class="btn primary" id="refreshBtn">刷新</button>
@@ -20,15 +20,19 @@
     </select>
     <input id="searchInput" type="text" placeholder="订单号 / 商品 / 备注">
     <button class="btn" id="searchBtn">搜索</button>
+    <button class="btn success" onclick="batchShop('mark_paid')">批量补单</button>
+    <button class="btn" onclick="batchShop('refulfill')">批量补发</button>
+    <button class="btn danger" onclick="batchShop('delete')">批量删除</button>
     <span class="small muted" id="totalText"></span>
   </div>
   <div class="table-wrap">
     <table>
       <thead><tr>
+        <th style="width:34px;"><input type="checkbox" id="checkAll"></th>
         <th>订单号</th><th>商品</th><th>数量</th><th>金额</th>
-        <th>备注</th><th>支付单号</th><th>状态</th><th>时间</th><th style="width:190px;">操作</th>
+        <th>备注</th><th>支付单号</th><th>状态</th><th>时间</th><th style="width:200px;">操作</th>
       </tr></thead>
-      <tbody id="shopRows"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody>
+      <tbody id="shopRows"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody>
     </table>
   </div>
   <div class="pager">
@@ -73,11 +77,13 @@ async function load() {
     total = data.total || 0;
     window.__orders = data.orders || [];
     document.getElementById('totalText').textContent = `共 ${total} 笔`;
+    document.getElementById('checkAll').checked = false;
     if (!window.__orders.length) {
-      document.getElementById('shopRows').innerHTML = '<tr><td colspan="9" class="empty">暂无订单</td></tr>';
+      document.getElementById('shopRows').innerHTML = '<tr><td colspan="10" class="empty">暂无订单</td></tr>';
     } else {
       document.getElementById('shopRows').innerHTML = window.__orders.map(o => `
         <tr>
+          <td><input type="checkbox" class="shop-check" value="${esc(o.order_no)}"></td>
           <td class="mono small">${esc(o.order_no)}</td>
           <td>${esc(o.product_name_snapshot)}</td>
           <td>${o.qty}</td>
@@ -87,7 +93,7 @@ async function load() {
           <td><span class="badge ${SHOP_STATUS_CLASS[o.status] || ''}">${SHOP_STATUS_TEXT[o.status] || esc(o.status)}</span></td>
           <td class="small">${esc(o.created_at)}${o.paid_at ? '<br>' + esc(o.paid_at) : ''}</td>
           <td>
-            ${o.status === 'pending' || o.status === 'failed' ? `<button class="btn sm success" onclick="markPaid('${esc(o.order_no)}')">标记支付</button>` : ''}
+            ${o.status === 'pending' || o.status === 'failed' ? `<button class="btn sm success" onclick="markPaid('${esc(o.order_no)}')">补单</button>` : ''}
             ${o.status === 'paid' || o.status === 'failed' ? `<button class="btn sm" onclick="refulfill('${esc(o.order_no)}')">补发</button>` : ''}
             ${o.card_payload ? `<button class="btn sm" onclick="viewCards('${esc(o.order_no)}', '${esc(o.product_name_snapshot)}')">卡密</button>` : ''}
           </td>
@@ -109,10 +115,36 @@ async function refulfill(orderNo) {
 }
 
 async function markPaid(orderNo) {
-  if (!confirm('确认该订单已线下收款/外部支付？将立即标记支付并发货。')) return;
+  if (!confirm('确认补单？将标记支付并发货（未支付订单会同步支付状态）。')) return;
   try {
     await api(`/api/admin/shop-orders/${encodeURIComponent(orderNo)}/mark-paid`, { method: 'POST' });
-    toast('已标记支付并发货', 'success');
+    toast('补单成功，已发货', 'success');
+    load();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function selectedOrderNos() {
+  return Array.from(document.querySelectorAll('.shop-check:checked')).map(el => el.value);
+}
+
+async function batchShop(action) {
+  const ids = selectedOrderNos();
+  if (!ids.length) { toast('请先勾选订单', 'error'); return; }
+  const tips = {
+    mark_paid: `确认为选中的 ${ids.length} 笔订单补单？未支付订单会标记支付并自动发货。`,
+    refulfill: `确认对选中的 ${ids.length} 笔订单补发？`,
+    delete: `确认删除选中的 ${ids.length} 笔商城订单？删除后不可恢复（已售卡密记录保留）。`,
+  };
+  if (!confirm(tips[action] || '确认执行该操作？')) return;
+  try {
+    const r = await api('/api/admin/shop-orders/batch', {
+      method: 'POST', body: { action, ids },
+    });
+    if (r.failed && r.failed.length) {
+      toast((r.message || '部分失败') + '：' + r.failed.map(f => f.order_no + ' ' + (f.reason || '')).join('；'), 'error');
+    } else {
+      toast(r.message || '操作完成', 'success');
+    }
     load();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -131,6 +163,9 @@ document.getElementById('statusFilter').addEventListener('change', () => { page 
 document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') { page = 1; load(); } });
 document.getElementById('prevBtn').addEventListener('click', () => { if (page > 1) { page--; load(); } });
 document.getElementById('nextBtn').addEventListener('click', () => { page++; load(); });
+document.getElementById('checkAll').addEventListener('change', e => {
+  document.querySelectorAll('.shop-check').forEach(el => { el.checked = e.target.checked; });
+});
 document.getElementById('cardsModal').addEventListener('click', e => {
   if (e.target.id === 'cardsModal') closeModal();
 });

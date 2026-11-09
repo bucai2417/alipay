@@ -216,6 +216,26 @@ def main():
         assert "状态 200" in meta_text, f"HTTP 调试状态异常: {meta_text}"
         page.locator("#try").screenshot(path=os.path.join(OUT, "ui_api_try_http.png"))
 
+        # ---------- 批量操作控件 ----------
+        page.goto(BASE + "/admin/orders", wait_until="networkidle")
+        assert page.locator(".order-check").count() >= 1, "订单列表缺少批量选择"
+        assert page.locator("text=批量补单").count() >= 1, "订单列表缺少批量补单"
+        assert page.locator("th:has-text('回调')").count() == 1, "订单列表缺少回调状态列"
+        page.check(".order-check >> nth=0")
+        assert page.locator("#checkAll").count() == 1, "缺少全选"
+        page.screenshot(path=os.path.join(OUT, "ui_admin_orders_batch.png"))
+
+        page.goto(BASE + "/admin/shop-orders", wait_until="networkidle")
+        assert page.locator(".shop-check").count() >= 1, "商城订单缺少批量选择"
+        assert page.locator("text=批量补单").count() >= 1, "商城订单缺少批量补单"
+
+        page.goto(BASE + "/admin/products", wait_until="networkidle")
+        assert page.locator(".product-check").count() >= 1, "商品列表缺少批量选择"
+        assert page.locator("text=批量删除").count() >= 1, "商品列表缺少批量删除"
+
+        page.goto(BASE + "/admin/feedback", wait_until="networkidle")
+        assert page.locator("text=批量关闭").count() >= 1, "工单缺少批量关闭"
+
         # ---------- 后台各页面 ----------
         for path in ["/admin/pay-config", "/admin/products", "/admin/shop-orders",
                      "/admin/orders", "/admin/feedback", "/admin/settings",

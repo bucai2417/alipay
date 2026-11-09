@@ -82,7 +82,8 @@
           </div>
           {% endif %}
           <p class="small muted mt8">所有接口均为 <span class="mono">POST</span> 或 <span class="mono">GET</span> 到
-            <span class="inline-code">/api/codepay</span>，通过 <span class="inline-code">act</span> 参数区分操作。</p>
+            <span class="inline-code">/api/codepay</span>，通过 <span class="inline-code">act</span> 参数区分操作。
+            同时兼容旧系统常用的 <span class="inline-code">/submit.php</span> 与 <span class="inline-code">/api.php</span> 路径。</p>
         </div>
       </div>
     </section>
@@ -225,7 +226,7 @@ def generate_sign(params: dict, merchant_key: str) -> str:
 
     <!-- notify -->
     <section class="card doc-card" id="api-notify">
-      <h2><span class="method post">POST</span> 支付通知</h2>
+      <h2><span class="method post">POST</span> 支付通知（商户回调）</h2>
       <p>用户支付成功后，系统向商户的 <span class="inline-code">notify_url</span> 发送通知。商户需校验 <code>sign</code>，返回纯文本 <span class="inline-code">success</span> 表示已收到。</p>
       <table class="param-table">
         <thead><tr><th>字段</th><th>说明</th></tr></thead>
@@ -240,7 +241,14 @@ def generate_sign(params: dict, merchant_key: str) -> str:
           <tr><td><code>sign / sign_type</code></td><td>MD5 签名，sign_type=MD5</td></tr>
         </tbody>
       </table>
-      <p class="small muted mt8">回调使用与请求相同的签名规则；同一订单可能重复通知，请务必幂等处理。</p>
+      <h3>重试机制</h3>
+      <ul>
+        <li>商户返回 <span class="inline-code">success</span>（小写）即视为成功；其他内容或非 2xx 视为失败。</li>
+        <li>失败自动重试，间隔依次为 1 分钟、5 分钟、15 分钟、30 分钟、60 分钟，最多 5 次。</li>
+        <li>后台「码支付订单」列表显示回调状态（未回调 / 已回调 / 待重试 / 无需回调 / 回调失败），可对单笔订单手动「重发回调」。</li>
+        <li>同一订单可能重复通知，请务必幂等处理（以 <span class="inline-code">out_trade_no</span> 为准）。</li>
+      </ul>
+      <p class="small muted mt8">回调格式与彩虹易支付等主流码支付网关一致：POST 表单、MD5 签名、返回 success。</p>
     </section>
 
     <!-- health -->

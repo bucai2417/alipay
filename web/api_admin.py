@@ -411,7 +411,9 @@ def admin_product_detail(product_id):
             return fail("商品不存在", 404)
         return ok(product=product)
     if request.method == "DELETE":
-        svc.delete_product(product_id)
+        result = svc.delete_product(product_id)
+        if not result.get("ok"):
+            return fail(result.get("msg", "删除失败"))
         return ok(message="已删除")
     data = json_body()
     fields = {}
@@ -521,16 +523,104 @@ def admin_refulfill(order_no):
     return fail(result.get("msg", "补发失败"))
 
 
-@bp.route("/api/admin/shop-orders/<order_no>/mark-paid", methods=["POST"])
+@bp.route("/api/admin/orders/batch", methods=["POST"])
 @login_required
-def admin_shop_mark_paid(order_no):
-    """线下收款/外部支付后，手动将商城订单置为已支付并发货。"""
-    svc = ShopService()
-    order = svc.db.get_order_by_no(order_no)
+def admin_orders_batch():
+    data = json_body()
+    action = str(data.get("action") or "").lower()
+    ids = data.get("ids") or []
+    if not isinstance(ids, list):
+        ids = [ids]
+    store = OrderStore()
+
+    if action == "delete":
+        n = store.delete_many(ids)
+        return ok(affected=n, message=f"已删除 {n} 笔订单")
+
+    if action == "expire":
+        n = store.set_status_many(ids, 2)
+        return ok(affected=n, message=f"已置为过期 {n} 笔")
+
+    if action in ("mark_paid", "repay"):
+        changed = 0
+        for oid in ids:
+            order = store.get_order(order_id=str(oid))
+            if order and order["status"] == 0:
+                if mark_paid(str(oid), detected_by="admin_batch").get("changed"):
+                    changed += 1
+        return ok(affected=changed, message=f"补单成功 {changed} 笔")
+
+    return fail("不支持的批量操作")
+
+
+@bp.route("/api/admin/orders/<order_id>/notify", methods=["POST"])
+@login_required
+def admin_order_notify(order_id):
+    """手动重发商户回调（补单/排障时使用）。"""
+    from alipay_pay.codepay import CodePay
+
+    store = OrderStore()
+    order = store.get_order(order_id=order_id)
     if not order:
         return fail("订单不存在", 404)
+    if order["status"] != 1:
+        return fail("订单未支付，无法发送回调")
+
+    result = CodePay().send_notification(order)
+    fresh = store.get_order(order_id=order_id)
+    if result.get("ok"):
+        return ok(result=result, order=fresh,
+                  message="无需回调" if result.get("skipped") else "回调发送成功")
+    return fail(result.get("error") or "回调发送失败", order=fresh, result=result)
+
+
+@bp.route("/api/admin/shop-orders/batch", methods=["POST"])
+@login_required
+def admin_shop_orders_batch():
+    data = json_body()
+    action = str(data.get("action") or "").lower()
+    order_nos = data.get("ids") or data.get("order_nos") or []
+    if not isinstance(order_nos, list):
+        order_nos = [order_nos]
+
+    svc = ShopService()
+
+    if action == "delete":
+        n = svc.delete_orders_many(order_nos)
+        return ok(affected=n, message=f"已删除 {n} 笔商城订单")
+
+    if action == "mark_paid":
+        success, failed = 0, []
+        for no in order_nos:
+            result = _shop_mark_paid(svc, str(no))
+            if result.get("ok"):
+                success += 1
+            else:
+                failed.append({"order_no": no, "reason": result.get("reason")})
+        return ok(affected=success, failed=failed,
+                  message=f"补单成功 {success} 笔" + (f"，失败 {len(failed)} 笔" if failed else ""))
+
+    if action == "refulfill":
+        success, failed = 0, []
+        for no in order_nos:
+            result = svc.refulfill(str(no))
+            if result.get("code") == 1:
+                success += 1
+            else:
+                failed.append({"order_no": no, "reason": result.get("msg")})
+        return ok(affected=success, failed=failed,
+                  message=f"补发成功 {success} 笔" + (f"，失败 {len(failed)} 笔" if failed else ""))
+
+    return fail("不支持的批量操作")
+
+
+def _shop_mark_paid(svc: ShopService, order_no: str) -> dict:
+    """商城订单补单：未支付的支付单先标记支付，否则直接补发。"""
+    order = svc.db.get_order_by_no(order_no)
+    if not order:
+        return {"ok": False, "reason": "订单不存在"}
     if order.get("status") not in ("pending", "failed", "paid"):
-        return fail(f"当前状态不可标记: {order.get('status')}")
+        return {"ok": False, "reason": f"当前状态不可补单: {order.get('status')}"}
 
     store = OrderStore()
     pay_order = store.get_order(out_trade_no=order.get("payment_out_trade_no"))
@@ -539,9 +629,59 @@ def admin_shop_mark_paid(order_no):
     else:
         result = svc.fulfill_order(order, notify=True)
         if result.get("code") != 1 and result.get("msg") != "ALREADY_FULFILLED":
-            return fail(result.get("msg", "发货失败"))
+            return {"ok": False, "reason": result.get("msg", "发货失败")}
     fresh = svc.db.get_order_by_no(order_no)
-    return ok(order=svc.public_order_view(fresh), message="已标记支付并发货")
+    return {"ok": True, "order": svc.public_order_view(fresh)}
+
+
+@bp.route("/api/admin/products/batch", methods=["POST"])
+@login_required
+def admin_products_batch():
+    data = json_body()
+    action = str(data.get("action") or "").lower()
+    ids = data.get("ids") or []
+    if not isinstance(ids, list):
+        ids = [ids]
+    svc = ShopService()
+
+    if action == "delete":
+        result = svc.delete_products_many(ids)
+        return ok(deleted=result.get("deleted", 0), skipped=result.get("skipped", []),
+                  message=f"已删除 {result.get('deleted', 0)} 个商品")
+    if action in ("on_sale", "off_sale"):
+        n = svc.set_products_status_many(ids, 1 if action == "on_sale" else 0)
+        return ok(affected=n, message=("已上架" if action == "on_sale" else "已下架") + f" {n} 个商品")
+    return fail("不支持的批量操作")
+
+
+@bp.route("/api/admin/feedback/tickets/batch", methods=["POST"])
+@login_required
+def admin_tickets_batch():
+    data = json_body()
+    action = str(data.get("action") or "").lower()
+    ids = data.get("ids") or []
+    if not isinstance(ids, list):
+        ids = [ids]
+    svc = ShopService()
+
+    if action == "delete":
+        n = svc.delete_tickets_many(ids)
+        return ok(affected=n, message=f"已删除 {n} 个工单")
+    if action in ("close", "open"):
+        n = svc.set_tickets_status_many(ids, "closed" if action == "close" else "open")
+        return ok(affected=n, message=f"已{'关闭' if action == 'close' else '开启'} {n} 个工单")
+    return fail("不支持的批量操作")
+
+
+@bp.route("/api/admin/shop-orders/<order_no>/mark-paid", methods=["POST"])
+@login_required
+def admin_shop_mark_paid(order_no):
+    """线下收款/外部支付后，手动补单并发货。"""
+    svc = ShopService()
+    result = _shop_mark_paid(svc, order_no)
+    if not result.get("ok"):
+        return fail(result.get("reason", "补单失败"))
+    return ok(order=result.get("order"), message="补单成功，已标记支付并发货")
 
 
 # ---------------- 客服 ----------------

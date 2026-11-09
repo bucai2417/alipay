@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from urllib.parse import urlparse
 
 from core.logger import get_logger
 from core.settings import load_alipay_config
@@ -21,8 +20,6 @@ from .qr import generate_qr_base64
 from .transfer import AlipayTransfer
 
 logger = get_logger("alipay.codepay")
-
-LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def resolve_qr_path(qr_path: str) -> str:
@@ -234,18 +231,16 @@ class CodePay:
             logger.warning("处理支付通知失败: %s", e)
             return {"code": -1, "msg": str(e)}
 
-    def send_notification(self, order: dict) -> bool:
-        """向商户 notify_url 发送支付成功通知。"""
+    def send_notification(self, order: dict) -> dict:
+        """向商户 notify_url 发送支付成功通知。
+
+        返回 {"ok": bool, "skipped": bool?, "error": str?, "attempts": int?}。
+        失败会自动登记重试（由监控线程按退避策略重发）。
+        """
         url = str(order.get("notify_url") or "").strip()
         if not url:
-            return True
-        try:
-            host = (urlparse(url).hostname or "").lower()
-            if host in LOCAL_HOSTS:
-                logger.info("跳过本机回调: %s", url)
-                return True
-        except Exception:
-            pass
+            self.store.mark_notify_skipped(order["id"])
+            return {"ok": True, "skipped": True}
 
         notify_data = {
             "pid": order["pid"],
@@ -259,6 +254,7 @@ class CodePay:
         notify_data["sign"] = generate_sign(notify_data, self.merchant_key)
         notify_data["sign_type"] = "MD5"
 
+        error = ""
         try:
             import requests
 
@@ -268,13 +264,15 @@ class CodePay:
                 timeout=5,
                 headers={"User-Agent": "CodePay/1.0"},
             )
-            ok = (resp.text or "").strip().lower() == "success"
-            if ok:
+            if (resp.text or "").strip().lower() == "success":
+                self.store.mark_notify_done(order["id"])
                 logger.info("商户通知成功: %s", order["out_trade_no"])
-            else:
-                logger.warning("商户通知失败: %s HTTP %s -> %s",
-                               order["out_trade_no"], resp.status_code, (resp.text or "")[:200])
-            return ok
+                return {"ok": True}
+            error = f"HTTP {resp.status_code}: {(resp.text or '')[:120]}"
         except Exception as e:
-            logger.warning("商户通知异常: %s ", e)
-            return False
+            error = str(e)[:200]
+
+        attempts = self.store.schedule_notify_retry(order["id"], error)
+        logger.warning("商户通知失败 %s: %s（第 %s 次）",
+                       order["out_trade_no"], error, attempts)
+        return {"ok": False, "error": error, "attempts": attempts}

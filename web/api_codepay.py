@@ -66,8 +66,10 @@ def _payment_view(order: dict, cfg: dict) -> dict:
 
 
 @bp.route("/api/codepay", methods=["GET", "POST"])
+@bp.route("/submit.php", methods=["GET", "POST"])
+@bp.route("/api.php", methods=["GET", "POST"])
 def codepay_api():
-    """CodePay 兼容协议端点。"""
+    """CodePay 兼容协议端点（含 /submit.php、/api.php 兼容路径）。"""
     cfg = load_alipay_config()
     ready, reason = payment_readiness(cfg)
     if not ready:

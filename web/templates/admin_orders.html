@@ -1,7 +1,7 @@
 {% extends "admin_base.html" %}
 {% block title %}码支付订单 - 管理后台{% endblock %}
 {% block heading %}码支付订单{% endblock %}
-{% block subheading %}所有通过码支付协议或商城创建的支付订单{% endblock %}
+{% block subheading %}所有通过码支付协议或商城创建的支付订单，可批量补单/清理{% endblock %}
 {% block head_actions %}
   <button class="btn" id="exportBtn">导出 CSV</button>
   <button class="btn primary" id="refreshBtn">刷新</button>
@@ -18,6 +18,9 @@
     </select>
     <input id="searchInput" type="text" placeholder="订单号 / 商品名">
     <button class="btn" id="searchBtn">搜索</button>
+    <button class="btn success" onclick="batchOrders('mark_paid')">批量补单</button>
+    <button class="btn" onclick="batchOrders('expire')">批量置过期</button>
+    <button class="btn danger" onclick="batchOrders('delete')">批量删除</button>
     <span class="small muted" id="totalText"></span>
   </div>
 
@@ -25,12 +28,13 @@
     <table>
       <thead>
         <tr>
+          <th style="width:34px;"><input type="checkbox" id="checkAll"></th>
           <th>平台订单号</th><th>商户单号</th><th>商品</th>
-          <th>金额</th><th>实付</th><th>状态</th>
-          <th>创建时间</th><th>支付时间</th><th style="width:170px;">操作</th>
+          <th>金额</th><th>实付</th><th>状态</th><th>回调</th>
+          <th>创建时间</th><th>支付时间</th><th style="width:190px;">操作</th>
         </tr>
       </thead>
-      <tbody id="orderRows"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody>
+      <tbody id="orderRows"><tr><td colspan="11" class="empty">加载中...</td></tr></tbody>
     </table>
   </div>
   <div class="pager">
@@ -47,6 +51,15 @@ let page = 1;
 const pageSize = 20;
 let total = 0;
 
+const NOTIFY_TEXT = {0: '未回调', 1: '已回调', 2: '待重试', 3: '无需回调', 4: '回调失败'};
+const NOTIFY_CLASS = {0: '', 1: 'green', 2: 'orange', 3: '', 4: 'red'};
+
+function notifyBadge(o) {
+  const s = Number(o.notify_status || 0);
+  const title = o.notify_last_error ? ` title="${esc(o.notify_last_error)}"` : '';
+  return `<span class="badge ${NOTIFY_CLASS[s] || ''}"${title}>${NOTIFY_TEXT[s] || s}</span>`;
+}
+
 async function load() {
   const params = new URLSearchParams({ page, page_size: pageSize });
   const status = document.getElementById('statusFilter').value;
@@ -59,22 +72,26 @@ async function load() {
     total = data.total || 0;
     document.getElementById('totalText').textContent = `共 ${total} 笔`;
     const rows = data.orders || [];
+    document.getElementById('checkAll').checked = false;
     if (!rows.length) {
-      document.getElementById('orderRows').innerHTML = '<tr><td colspan="9" class="empty">暂无订单</td></tr>';
+      document.getElementById('orderRows').innerHTML = '<tr><td colspan="11" class="empty">暂无订单</td></tr>';
     } else {
       document.getElementById('orderRows').innerHTML = rows.map(o => `
         <tr>
+          <td><input type="checkbox" class="order-check" value="${esc(o.id)}"></td>
           <td class="mono">${esc(o.id)}</td>
           <td class="mono">${esc(o.out_trade_no)}</td>
           <td>${esc(o.name)}</td>
           <td>¥${fmtMoney(o.price)}</td>
           <td>¥${fmtMoney(o.payment_amount)}</td>
           <td><span class="badge ${STATUS_CLASS[o.status] || ''}">${STATUS_TEXT[o.status] || o.status}</span></td>
+          <td>${notifyBadge(o)}</td>
           <td class="small">${esc(o.add_time)}</td>
           <td class="small">${esc(o.pay_time || '-')}</td>
           <td>
-            ${o.status === 0 ? `<button class="btn sm success" onclick="setStatus('${esc(o.id)}', 1)">标记支付</button>` : ''}
+            ${o.status === 0 ? `<button class="btn sm success" onclick="setStatus('${esc(o.id)}', 1)">补单</button>` : ''}
             ${o.status === 0 ? `<button class="btn sm" onclick="setStatus('${esc(o.id)}', 2)">置过期</button>` : ''}
+            ${o.status === 1 ? `<button class="btn sm" onclick="notifyOrder('${esc(o.id)}')">重发回调</button>` : ''}
             <button class="btn sm danger" onclick="removeOrder('${esc(o.id)}')">删除</button>
           </td>
         </tr>`).join('');
@@ -87,7 +104,7 @@ async function load() {
 }
 
 async function setStatus(id, status) {
-  if (status === 1 && !confirm('确认将该订单标记为已支付？将触发商城发货与商户回调。')) return;
+  if (status === 1 && !confirm('确认补单？将标记为已支付，触发商城发货与商户回调。')) return;
   try {
     await api(`/api/admin/orders/${encodeURIComponent(id)}/status`, { method: 'POST', body: { status } });
     toast('状态已更新', 'success');
@@ -102,6 +119,40 @@ async function removeOrder(id) {
     toast('已删除', 'success');
     load();
   } catch (e) { toast(e.message, 'error'); }
+}
+
+function selectedOrderIds() {
+  return Array.from(document.querySelectorAll('.order-check:checked')).map(el => el.value);
+}
+
+async function batchOrders(action) {
+  const ids = selectedOrderIds();
+  if (!ids.length) { toast('请先勾选订单', 'error'); return; }
+  const tips = {
+    mark_paid: `确认为选中的 ${ids.length} 笔订单补单？将触发商城发货与商户回调。`,
+    expire: `确认将选中的 ${ids.length} 笔订单置为过期？`,
+    delete: `确认删除选中的 ${ids.length} 笔订单？删除后不可恢复。`,
+  };
+  if (!confirm(tips[action] || '确认执行该操作？')) return;
+  try {
+    const r = await api('/api/admin/orders/batch', {
+      method: 'POST', body: { action, ids },
+    });
+    toast(r.message || '操作完成', 'success');
+    load();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function notifyOrder(id) {
+  if (!confirm('重发该订单的商户回调？')) return;
+  try {
+    const r = await api(`/api/admin/orders/${encodeURIComponent(id)}/notify`, { method: 'POST' });
+    toast(r.message || '回调已处理', 'success');
+    load();
+  } catch (e) {
+    toast(e.message, 'error');
+    load();
+  }
 }
 
 document.getElementById('refreshBtn').addEventListener('click', load);
@@ -120,6 +171,9 @@ document.getElementById('searchInput').addEventListener('keydown', e => {
 });
 document.getElementById('prevBtn').addEventListener('click', () => { if (page > 1) { page--; load(); } });
 document.getElementById('nextBtn').addEventListener('click', () => { page++; load(); });
+document.getElementById('checkAll').addEventListener('change', e => {
+  document.querySelectorAll('.order-check').forEach(el => { el.checked = e.target.checked; });
+});
 
 load();
 </script>

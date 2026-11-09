@@ -142,6 +142,21 @@ def _process_bills_amount_mode(bills, cfg) -> int:
     return matched
 
 
+def _retry_notifications(cfg) -> int:
+    """重发到期的商户回调（失败退避重试）。"""
+    store = OrderStore()
+    due = store.find_due_notifications(20)
+    if not due:
+        return 0
+    codepay = CodePay(cfg)
+    for order in due:
+        try:
+            codepay.send_notification(order)
+        except Exception as e:
+            logger.warning("重发回调失败 %s: %s", order.get("out_trade_no"), e)
+    return len(due)
+
+
 def run_monitoring_cycle(cleanup: bool = True) -> dict:
     cfg = load_alipay_config()
     start = datetime.now()
@@ -154,6 +169,11 @@ def run_monitoring_cycle(cleanup: bool = True) -> dict:
                 _shop_service().expire_pending_by_payment([o["out_trade_no"] for o in expired])
             except Exception as e:
                 logger.warning("同步商城过期状态失败: %s", e)
+
+    try:
+        _retry_notifications(cfg)
+    except Exception as e:
+        logger.warning("回调重试失败: %s", e)
 
     if not is_configured(cfg):
         return {"ok": False, "skipped": "not_configured", "matched": 0, "bills": 0}

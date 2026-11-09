@@ -11,14 +11,20 @@
   <div class="toolbar">
     <input id="searchInput" type="text" placeholder="商品名称 / 描述">
     <button class="btn" id="searchBtn">搜索</button>
+    <button class="btn" onclick="batchProducts('on_sale')">批量上架</button>
+    <button class="btn" onclick="batchProducts('off_sale')">批量下架</button>
+    <button class="btn danger" onclick="batchProducts('delete')">批量删除</button>
     <span class="small muted" id="totalText"></span>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>ID</th><th>商品</th><th>价格</th><th>发货方式</th><th>库存</th><th>已售</th><th>状态</th><th>排序</th><th style="width:220px;">操作</th></tr>
+        <tr>
+          <th style="width:34px;"><input type="checkbox" id="checkAll"></th>
+          <th>ID</th><th>商品</th><th>价格</th><th>发货方式</th><th>库存</th><th>已售</th><th>状态</th><th>排序</th><th style="width:220px;">操作</th>
+        </tr>
       </thead>
-      <tbody id="productRows"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody>
+      <tbody id="productRows"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -96,7 +102,7 @@
     <div class="table-wrap" style="max-height:320px;overflow-y:auto;">
       <table>
         <thead><tr>
-          <th style="width:34px;"><input type="checkbox" id="checkAll" style="width:auto;"></th>
+          <th style="width:34px;"><input type="checkbox" id="cardCheckAll" style="width:auto;"></th>
           <th>ID</th><th>卡密</th><th>状态</th><th>售出订单</th><th>时间</th><th style="width:150px;">操作</th>
         </tr></thead>
         <tbody id="cardRows"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody>
@@ -130,12 +136,14 @@ async function loadProducts() {
     const data = await api('/api/admin/products?' + params.toString());
     const list = data.products || [];
     document.getElementById('totalText').textContent = `共 ${data.total || 0} 个商品`;
+    document.getElementById('checkAll').checked = false;
     if (!list.length) {
-      document.getElementById('productRows').innerHTML = '<tr><td colspan="9" class="empty">暂无商品</td></tr>';
+      document.getElementById('productRows').innerHTML = '<tr><td colspan="10" class="empty">暂无商品</td></tr>';
       return;
     }
     document.getElementById('productRows').innerHTML = list.map(p => `
       <tr>
+        <td><input type="checkbox" class="product-check" value="${p.id}"></td>
         <td>${p.id}</td>
         <td>
           <div style="font-weight:600;">${esc(p.name)}</div>
@@ -234,6 +242,32 @@ async function deleteProduct(id) {
   try {
     await api('/api/admin/products/' + id, { method: 'DELETE' });
     toast('已删除', 'success');
+    loadProducts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function selectedProductIds() {
+  return Array.from(document.querySelectorAll('.product-check:checked')).map(el => parseInt(el.value, 10));
+}
+
+async function batchProducts(action) {
+  const ids = selectedProductIds();
+  if (!ids.length) { toast('请先勾选商品', 'error'); return; }
+  const tips = {
+    on_sale: `确认上架选中的 ${ids.length} 个商品？`,
+    off_sale: `确认下架选中的 ${ids.length} 个商品？`,
+    delete: `确认删除选中的 ${ids.length} 个商品？其卡密会一并删除，已有订单的商品会被跳过。`,
+  };
+  if (!confirm(tips[action] || '确认执行该操作？')) return;
+  try {
+    const r = await api('/api/admin/products/batch', {
+      method: 'POST', body: { action, ids },
+    });
+    if (r.skipped && r.skipped.length) {
+      toast((r.message || '部分完成') + `，跳过 ${r.skipped.length} 个（已有订单）`, 'error');
+    } else {
+      toast(r.message || '操作完成', 'success');
+    }
     loadProducts();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -342,6 +376,9 @@ document.getElementById('cardSearch').addEventListener('keydown', e => { if (e.k
 document.getElementById('batchDisable').addEventListener('click', () => batch('disable'));
 document.getElementById('batchDelete').addEventListener('click', () => batch('delete'));
 document.getElementById('checkAll').addEventListener('change', e => {
+  document.querySelectorAll('.product-check').forEach(el => { el.checked = e.target.checked; });
+});
+document.getElementById('cardCheckAll').addEventListener('change', e => {
   document.querySelectorAll('.card-check').forEach(el => { el.checked = e.target.checked; });
 });
 document.querySelectorAll('.modal-mask').forEach(mask => {

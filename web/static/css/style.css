@@ -99,6 +99,7 @@ label.field > span { display: block; font-size: 13px; color: var(--muted); margi
 .badge.purple { background: #f1ecff; color: #6d28d9; }
 
 table { width: 100%; border-collapse: collapse; }
+table input[type="checkbox"] { width: auto; height: 16px; accent-color: var(--primary); vertical-align: middle; }
 th, td { padding: 11px 12px; text-align: left; font-size: 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 th { color: var(--muted); font-weight: 600; font-size: 12.5px; background: #f8fafd; letter-spacing: .02em; }
 tbody tr { transition: background .12s; }

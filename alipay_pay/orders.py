@@ -208,6 +208,113 @@ class OrderStore:
             amount = round(amount + float(offset), 2)
         raise Exception("无法分配唯一的支付金额，请稍后重试")
 
+    # ---------- 回调状态 ----------
+    # 0 未回调 / 1 成功 / 2 待重试 / 3 无需回调 / 4 重试耗尽
+
+    def mark_notify_done(self, order_id):
+        c = self.db.conn()
+        with self.db.write_lock:
+            c.execute(
+                """UPDATE codepay_orders
+                   SET notify_status = 1, notify_attempts = notify_attempts + 1,
+                       notify_last_error = '', notify_next_at = NULL
+                   WHERE id = ?""",
+                (order_id,),
+            )
+            c.commit()
+
+    def mark_notify_skipped(self, order_id):
+        c = self.db.conn()
+        with self.db.write_lock:
+            c.execute(
+                """UPDATE codepay_orders
+                   SET notify_status = 3, notify_last_error = '', notify_next_at = NULL
+                   WHERE id = ?""",
+                (order_id,),
+            )
+            c.commit()
+
+    def schedule_notify_retry(self, order_id, error, max_attempts=5) -> int:
+        c = self.db.conn()
+        row = c.execute(
+            "SELECT notify_attempts FROM codepay_orders WHERE id = ?", (order_id,)
+        ).fetchone()
+        attempts = int(row["notify_attempts"] if row else 0) + 1
+        with self.db.write_lock:
+            if attempts >= max_attempts:
+                c.execute(
+                    """UPDATE codepay_orders
+                       SET notify_status = 4, notify_attempts = ?,
+                           notify_last_error = ?, notify_next_at = NULL
+                       WHERE id = ?""",
+                    (attempts, (error or "")[:255], order_id),
+                )
+            else:
+                delay = [60, 300, 900, 1800, 3600][min(attempts - 1, 4)]
+                next_at = (datetime.now() + timedelta(seconds=delay)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                c.execute(
+                    """UPDATE codepay_orders
+                       SET notify_status = 2, notify_attempts = ?,
+                           notify_last_error = ?, notify_next_at = ?
+                       WHERE id = ?""",
+                    (attempts, (error or "")[:255], next_at, order_id),
+                )
+            c.commit()
+        return attempts
+
+    def find_due_notifications(self, limit=20):
+        c = self.db.conn()
+        rows = c.execute(
+            """SELECT * FROM codepay_orders
+               WHERE status = 1 AND notify_status = 2
+                 AND notify_next_at IS NOT NULL AND notify_next_at <= ?
+               ORDER BY notify_next_at ASC LIMIT ?""",
+            (now_str(), max(1, min(int(limit or 20), 100))),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------- 批量操作 ----------
+
+    @staticmethod
+    def _clean_ids(ids):
+        out, seen = [], set()
+        for x in ids or []:
+            val = str(x or "").strip()
+            if not val or val in seen:
+                continue
+            seen.add(val)
+            out.append(val)
+        return out
+
+    def delete_many(self, ids) -> int:
+        cleaned = self._clean_ids(ids)
+        if not cleaned:
+            return 0
+        c = self.db.conn()
+        placeholders = ",".join("?" for _ in cleaned)
+        with self.db.write_lock:
+            cur = c.execute(
+                f"DELETE FROM codepay_orders WHERE id IN ({placeholders})", cleaned
+            )
+            c.commit()
+            return cur.rowcount or 0
+
+    def set_status_many(self, ids, status) -> int:
+        cleaned = self._clean_ids(ids)
+        if not cleaned:
+            return 0
+        c = self.db.conn()
+        placeholders = ",".join("?" for _ in cleaned)
+        with self.db.write_lock:
+            cur = c.execute(
+                f"UPDATE codepay_orders SET status = ? WHERE id IN ({placeholders})",
+                [int(status)] + cleaned,
+            )
+            c.commit()
+            return cur.rowcount or 0
+
 
 def gen_trade_no() -> str:
     return datetime.now().strftime("%Y%m%d%H%M%S") + str(random.randint(1, 999999)).zfill(6)

@@ -18,6 +18,10 @@
       </select>
       <label class="switch small"><input type="checkbox" id="unreadOnly"><span>仅未读</span></label>
     </div>
+    <div class="toolbar" style="margin-top:-4px;">
+      <button class="btn sm" onclick="batchTickets('close')">批量关闭</button>
+      <button class="btn sm danger" onclick="batchTickets('delete')">批量删除</button>
+    </div>
     <div id="ticketList" style="max-height:62vh;overflow-y:auto;">
       <div class="empty">加载中...</div>
     </div>
@@ -54,7 +58,10 @@ async function loadTickets() {
       <div class="card" style="padding:12px;margin-bottom:8px;cursor:pointer;${t.id === currentTicket ? 'border-color:var(--primary);' : ''}"
            onclick="openTicket(${t.id})">
         <div class="spread">
-          <b style="font-size:14px;">${escText(t.contact)}</b>
+          <div class="row" style="gap:8px;">
+            <input type="checkbox" class="ticket-check" value="${t.id}" onclick="event.stopPropagation()">
+            <b style="font-size:14px;">${escText(t.contact)}</b>
+          </div>
           ${t.unread ? '<span class="badge red">未读</span>' : `<span class="badge">${({open:'待回复',replied:'已回复',closed:'已关闭'})[t.status] || t.status}</span>`}
         </div>
         <div class="small muted" style="margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escText(t.last_message || '（暂无消息）')}</div>
@@ -131,6 +138,31 @@ async function setTicketStatus(status) {
 document.getElementById('refreshBtn').addEventListener('click', loadTickets);
 document.getElementById('statusFilter').addEventListener('change', loadTickets);
 document.getElementById('unreadOnly').addEventListener('change', loadTickets);
+
+function selectedTicketIds() {
+  return Array.from(document.querySelectorAll('.ticket-check:checked')).map(el => parseInt(el.value, 10));
+}
+
+async function batchTickets(action) {
+  const ids = selectedTicketIds();
+  if (!ids.length) { toast('请先勾选工单', 'error'); return; }
+  const tips = {
+    close: `确认关闭选中的 ${ids.length} 个工单？`,
+    delete: `确认删除选中的 ${ids.length} 个工单？会话消息会一并删除且不可恢复。`,
+  };
+  if (!confirm(tips[action] || '确认执行该操作？')) return;
+  try {
+    const r = await api('/api/admin/feedback/tickets/batch', {
+      method: 'POST', body: { action, ids },
+    });
+    toast(r.message || '操作完成', 'success');
+    if (action === 'delete' && ids.includes(currentTicket)) {
+      currentTicket = null;
+      document.getElementById('detailPanel').innerHTML = '<div class="empty">请选择左侧工单查看会话</div>';
+    }
+    loadTickets();
+  } catch (e) { toast(e.message, 'error'); }
+}
 
 loadTickets();
 </script>

@@ -47,7 +47,7 @@ class ShopService:
         return self.db.update_product(product_id, **kwargs)
 
     def delete_product(self, product_id):
-        self.db.delete_product(product_id)
+        return self.db.delete_product(product_id)
 
     def import_cards(self, product_id, codes):
         if not self.db.get_product(product_id):
@@ -480,6 +480,23 @@ class ShopService:
 
     def feedback_stats(self):
         return self.db.feedback_stats()
+
+    # ---------- 批量 ----------
+
+    def delete_orders_many(self, order_nos):
+        return self.db.delete_orders_many(order_nos)
+
+    def delete_products_many(self, ids):
+        return self.db.delete_products_many(ids)
+
+    def set_products_status_many(self, ids, status):
+        return self.db.set_products_status_many(ids, status)
+
+    def delete_tickets_many(self, ids):
+        return self.db.delete_tickets_many(ids)
+
+    def set_tickets_status_many(self, ids, status):
+        return self.db.set_tickets_status_many(ids, status)
 
     def _ticket_view(self, t):
         if not t:

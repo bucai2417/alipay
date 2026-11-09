@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS codepay_orders (
     notify_url VARCHAR(255) DEFAULT '',
     return_url VARCHAR(255) DEFAULT '',
     sitename VARCHAR(255) DEFAULT '',
-    source VARCHAR(16) DEFAULT 'api'
+    source VARCHAR(16) DEFAULT 'api',
+    notify_status TINYINT(1) DEFAULT 0,
+    notify_attempts INTEGER DEFAULT 0,
+    notify_last_error VARCHAR(255) DEFAULT '',
+    notify_next_at DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_cp_out_trade ON codepay_orders(out_trade_no);
 CREATE INDEX IF NOT EXISTS idx_cp_status_amount ON codepay_orders(status, payment_amount);
@@ -164,6 +168,15 @@ class Database:
             c.execute("ALTER TABLE codepay_orders ADD COLUMN payment_amount DECIMAL(10, 2) DEFAULT 0")
         if "source" not in cols:
             c.execute("ALTER TABLE codepay_orders ADD COLUMN source VARCHAR(16) DEFAULT 'api'")
+        # 回调状态（旧库增量升级）
+        for col, ddl in (
+            ("notify_status", "ALTER TABLE codepay_orders ADD COLUMN notify_status TINYINT(1) DEFAULT 0"),
+            ("notify_attempts", "ALTER TABLE codepay_orders ADD COLUMN notify_attempts INTEGER DEFAULT 0"),
+            ("notify_last_error", "ALTER TABLE codepay_orders ADD COLUMN notify_last_error VARCHAR(255) DEFAULT ''"),
+            ("notify_next_at", "ALTER TABLE codepay_orders ADD COLUMN notify_next_at DATETIME"),
+        ):
+            if col not in cols:
+                c.execute(ddl)
         cols = {r[1] for r in c.execute("PRAGMA table_info(feedback_tickets)").fetchall()}
         if "admin_read_at" not in cols:
             c.execute("ALTER TABLE feedback_tickets ADD COLUMN admin_read_at DATETIME")

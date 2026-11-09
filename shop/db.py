@@ -68,10 +68,16 @@ class ShopDB:
 
     def delete_product(self, product_id):
         c = self._c()
+        order_count = c.execute(
+            "SELECT COUNT(*) AS cnt FROM shop_orders WHERE product_id = ?", (product_id,)
+        ).fetchone()["cnt"]
+        if order_count:
+            return {"ok": False, "msg": "该商品已有订单记录，无法删除，建议改为下架"}
         with self.db.write_lock:
             c.execute("DELETE FROM cards WHERE product_id = ?", (product_id,))
             c.execute("DELETE FROM products WHERE id = ?", (product_id,))
             c.commit()
+        return {"ok": True}
 
     def get_product(self, product_id):
         row = self._c().execute(
@@ -672,3 +678,99 @@ class ShopDB:
             if d[k] is None:
                 d[k] = 0
         return d
+
+    # ---------- 批量操作 ----------
+
+    @staticmethod
+    def _clean_str_ids(ids):
+        out, seen = [], set()
+        for x in ids or []:
+            val = str(x or "").strip()
+            if not val or val in seen:
+                continue
+            seen.add(val)
+            out.append(val)
+        return out
+
+    @staticmethod
+    def _clean_int_ids(ids):
+        out, seen = [], set()
+        for x in ids or []:
+            try:
+                val = int(x)
+            except (TypeError, ValueError):
+                continue
+            if val <= 0 or val in seen:
+                continue
+            seen.add(val)
+            out.append(val)
+        return out
+
+    def delete_orders_many(self, order_nos) -> int:
+        cleaned = self._clean_str_ids(order_nos)
+        if not cleaned:
+            return 0
+        c = self._c()
+        placeholders = ",".join("?" for _ in cleaned)
+        with self.db.write_lock:
+            cur = c.execute(
+                f"DELETE FROM shop_orders WHERE order_no IN ({placeholders})", cleaned
+            )
+            c.commit()
+            return cur.rowcount or 0
+
+    def set_products_status_many(self, ids, status) -> int:
+        cleaned = self._clean_int_ids(ids)
+        if not cleaned:
+            return 0
+        c = self._c()
+        placeholders = ",".join("?" for _ in cleaned)
+        with self.db.write_lock:
+            cur = c.execute(
+                f"UPDATE products SET status = ?, updated_at = ? WHERE id IN ({placeholders})",
+                [int(status), now_str()] + cleaned,
+            )
+            c.commit()
+            return cur.rowcount or 0
+
+    def delete_products_many(self, ids):
+        deleted = 0
+        skipped = []
+        for pid in self._clean_int_ids(ids):
+            result = self.delete_product(pid)
+            if result.get("ok"):
+                deleted += 1
+            else:
+                skipped.append({"id": pid, "reason": result.get("msg", "删除失败")})
+        return {"deleted": deleted, "skipped": skipped}
+
+    def delete_tickets_many(self, ids) -> int:
+        cleaned = self._clean_int_ids(ids)
+        if not cleaned:
+            return 0
+        c = self._c()
+        placeholders = ",".join("?" for _ in cleaned)
+        with self.db.write_lock:
+            cur = c.execute(
+                f"DELETE FROM feedback_tickets WHERE id IN ({placeholders})", cleaned
+            )
+            c.commit()
+            return cur.rowcount or 0
+
+    def set_tickets_status_many(self, ids, status) -> int:
+        if status not in ("open", "replied", "closed"):
+            raise ValueError("status 无效")
+        cleaned = self._clean_int_ids(ids)
+        if not cleaned:
+            return 0
+        c = self._c()
+        placeholders = ",".join("?" for _ in cleaned)
+        with self.db.write_lock:
+            cur = c.execute(
+                f"""UPDATE feedback_tickets
+                    SET status = ?, updated_at = ?
+                    WHERE id IN ({placeholders})""",
+                [status, now_str()] + cleaned,
+            )
+            c.commit()
+            return cur.rowcount or 0

@@ -138,6 +138,7 @@ def main():
     check("支付页无演示按钮", "模拟支付" not in html)
 
     from alipay_pay.monitor import mark_paid
+    from alipay_pay.orders import OrderStore
 
     res = mark_paid(trade_no, detected_by="selftest")
     check("标记支付成功", res.get("changed") is True, res)
@@ -351,6 +352,156 @@ def main():
     check("调试 notify", r.get_json().get("response", {}).get("code") == 1, r.get_json())
     r = c.post("/api/admin/api-try", json={"act": "order", "params": {"out_trade_no": "TRY-0001"}})
     check("调试后订单已支付", r.get_json().get("response", {}).get("status") == 1)
+
+    # ================= 回调、补单与批量操作 =================
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs
+
+    class _CallbackHandler(BaseHTTPRequestHandler):
+        received = []
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length).decode("utf-8", "replace")
+            data = {k: v[0] for k, v in parse_qs(body).items()}
+            type(self).received.append(data)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"success")
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _CallbackHandler)
+    cb_port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def submit_order(out_no, money, notify_url=""):
+        pl = {"pid": pid, "type": "alipay", "out_trade_no": out_no,
+              "name": "回调测试", "money": money, "notify_url": notify_url,
+              "format": "json"}
+        pl["sign"] = sign(pl)
+        pl["act"] = "submit"
+        return c.post("/api/codepay", data=pl).get_json()
+
+    # 成功回调
+    cb = submit_order("CB-0001", "0.06", f"http://127.0.0.1:{cb_port}/cb")
+    check("回调用例订单", cb.get("code") == 1, cb)
+    mark_paid(cb["trade_no"], detected_by="selftest")
+    check("回调已收到", len(_CallbackHandler.received) == 1, _CallbackHandler.received)
+    if _CallbackHandler.received:
+        data = _CallbackHandler.received[-1]
+        check("回调字段", data.get("trade_status") == "TRADE_SUCCESS"
+              and data.get("out_trade_no") == "CB-0001"
+              and data.get("sign_type") == "MD5", data)
+        raw = "&".join(
+            f"{k}={data[k]}" for k in sorted(data)
+            if k not in ("sign", "sign_type", "act", "action", "format")
+            and str(data[k]) != ""
+        )
+        check("回调签名正确",
+              data.get("sign") == hashlib.md5((raw + key).encode()).hexdigest(),
+              data.get("sign"))
+    order_cb = OrderStore().get_order(order_id=cb.get("trade_no"))
+    check("回调状态已记录", bool(order_cb) and order_cb.get("notify_status") == 1, order_cb)
+
+    # 失败回调自动登记重试
+    fail = submit_order("CB-FAIL", "0.06", "http://127.0.0.1:9/cb")
+    mark_paid(fail["trade_no"], detected_by="selftest")
+    order_fail = OrderStore().get_order(order_id=fail["trade_no"])
+    check("回调失败登记重试", bool(order_fail)
+          and order_fail.get("notify_status") == 2
+          and int(order_fail.get("notify_attempts") or 0) >= 1
+          and bool(order_fail.get("notify_next_at")), order_fail)
+
+    # 手动重发回调
+    r = c.post(f"/api/admin/orders/{cb['trade_no']}/notify")
+    check("重发回调成功", r.status_code == 200 and r.get_json().get("success"), r.get_json())
+    r = c.post(f"/api/admin/orders/{fail['trade_no']}/notify")
+    check("重发回调失败提示", r.status_code == 400, r.status_code)
+    order_fail2 = OrderStore().get_order(order_id=fail["trade_no"])
+    check("重试次数递增", int(order_fail2.get("notify_attempts") or 0) >= 2, order_fail2)
+
+    # 兼容路径
+    compat = {"pid": pid, "type": "alipay", "out_trade_no": "COMPAT-1",
+              "name": "兼容路径", "money": "0.02", "format": "json"}
+    compat["sign"] = sign(compat)
+    compat["act"] = "submit"
+    r = c.post("/submit.php", data=compat)
+    check("兼容 /submit.php", r.status_code == 200 and r.get_json().get("code") == 1,
+          r.get_json())
+    r = c.get("/api.php", query_string={"act": "query", "pid": pid, "key": key})
+    check("兼容 /api.php", r.get_json().get("code") == 1, r.get_json())
+
+    # 批量：码支付订单
+    b1 = submit_order("BATCH-1", "0.02")
+    b2 = submit_order("BATCH-2", "0.02")
+    batch_ids = [b1["trade_no"], b2["trade_no"]]
+    r = c.post("/api/admin/orders/batch", json={"action": "expire", "ids": batch_ids})
+    check("批量置过期", r.get_json().get("affected") == 2, r.get_json())
+    r = c.post("/api/admin/orders/batch", json={"action": "mark_paid", "ids": batch_ids})
+    check("已过期不可补单", r.get_json().get("affected") == 0, r.get_json())
+    r = c.post("/api/admin/orders/batch", json={"action": "delete", "ids": batch_ids})
+    check("批量删除订单", r.get_json().get("affected") == 2, r.get_json())
+
+    bp = submit_order("BATCH-PAY", "0.02")
+    r = c.post("/api/admin/orders/batch", json={"action": "mark_paid", "ids": [bp["trade_no"]]})
+    check("批量补单", r.get_json().get("affected") == 1, r.get_json())
+    check("补单后已支付",
+          OrderStore().get_order(order_id=bp["trade_no"])["status"] == 1)
+
+    # 批量：商城订单
+    r = c.post("/api/shop/order", json={
+        "token": token, "product_id": stock_product["id"], "qty": 1,
+        "contact": "batch@example.com"})
+    bs = r.get_json()
+    check("批量商城订单创建", bs.get("code") == 1, bs)
+    r = c.post("/api/admin/shop-orders/batch",
+               json={"action": "mark_paid", "ids": [bs["order_no"]]})
+    check("批量商城补单", r.get_json().get("affected") == 1, r.get_json())
+    check("批量补单后发货",
+          c.get(f"/api/shop/order/{bs['order_no']}").get_json()
+          .get("order", {}).get("status") == "fulfilled")
+
+    r = c.post("/api/shop/order", json={
+        "token": token, "product_id": stock_product["id"], "qty": 1,
+        "contact": "batch2@example.com"})
+    bs2 = r.get_json()
+    r = c.post("/api/admin/shop-orders/batch",
+               json={"action": "delete", "ids": [bs2["order_no"]]})
+    check("批量删除商城订单", r.get_json().get("affected") == 1, r.get_json())
+
+    # 批量：商品上下架/删除
+    p1 = c.post("/api/admin/products", json={
+        "name": "批量商品1", "price": 0.01, "fulfill_mode": "stock", "status": 1,
+    }).get_json()["product"]
+    p2 = c.post("/api/admin/products", json={
+        "name": "批量商品2", "price": 0.01, "fulfill_mode": "stock", "status": 1,
+    }).get_json()["product"]
+    r = c.post("/api/admin/products/batch",
+               json={"action": "off_sale", "ids": [p1["id"], p2["id"]]})
+    check("批量下架商品", r.get_json().get("affected") == 2, r.get_json())
+    r = c.post("/api/admin/products/batch",
+               json={"action": "delete", "ids": [p1["id"], p2["id"]]})
+    check("批量删除商品", r.get_json().get("deleted") == 2, r.get_json())
+
+    # 批量：客服工单
+    fb3 = c.post("/api/shop/feedback/start",
+                 json={"token": token, "contact": "buyer2@example.com"}).get_json()
+    fb4 = c.post("/api/shop/feedback/start",
+                 json={"token": token, "contact": "batch@example.com"}).get_json()
+    tid3 = (fb3.get("ticket") or {}).get("id")
+    tid4 = (fb4.get("ticket") or {}).get("id")
+    r = c.post("/api/admin/feedback/tickets/batch",
+               json={"action": "close", "ids": [tid3, tid4]})
+    check("批量关闭工单", r.get_json().get("affected") == 2, r.get_json())
+    r = c.post("/api/admin/feedback/tickets/batch",
+               json={"action": "delete", "ids": [tid4]})
+    check("批量删除工单", r.get_json().get("affected") == 1, r.get_json())
+
+    server.shutdown()
 
     # ---------- 页面渲染 ----------
     for path, needle in [("/", "自动生成商品"), ("/shop", "自动生成商品"),
