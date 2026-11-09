@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS feedback_tickets (
     last_message TEXT DEFAULT '',
     last_sender VARCHAR(16) DEFAULT 'user',
     admin_read_at DATETIME,
+    notify_email VARCHAR(255) DEFAULT '',
+    notify_enabled TINYINT(1) DEFAULT 1,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL
 );
@@ -112,6 +114,10 @@ CREATE TABLE IF NOT EXISTS feedback_messages (
     ticket_id INTEGER NOT NULL,
     sender VARCHAR(16) NOT NULL,
     content TEXT NOT NULL,
+    attachment_url VARCHAR(255) DEFAULT '',
+    attachment_name VARCHAR(255) DEFAULT '',
+    attachment_type VARCHAR(64) DEFAULT '',
+    attachment_size INTEGER DEFAULT 0,
     created_at DATETIME NOT NULL,
     FOREIGN KEY(ticket_id) REFERENCES feedback_tickets(id) ON DELETE CASCADE
 );
@@ -187,6 +193,21 @@ class Database:
         cols = {r[1] for r in c.execute("PRAGMA table_info(feedback_tickets)").fetchall()}
         if "admin_read_at" not in cols:
             c.execute("ALTER TABLE feedback_tickets ADD COLUMN admin_read_at DATETIME")
+        for col, ddl in (
+            ("notify_email", "ALTER TABLE feedback_tickets ADD COLUMN notify_email VARCHAR(255) DEFAULT ''"),
+            ("notify_enabled", "ALTER TABLE feedback_tickets ADD COLUMN notify_enabled TINYINT(1) DEFAULT 1"),
+        ):
+            if col not in cols:
+                c.execute(ddl)
+        msg_cols = {r[1] for r in c.execute("PRAGMA table_info(feedback_messages)").fetchall()}
+        for col, ddl in (
+            ("attachment_url", "ALTER TABLE feedback_messages ADD COLUMN attachment_url VARCHAR(255) DEFAULT ''"),
+            ("attachment_name", "ALTER TABLE feedback_messages ADD COLUMN attachment_name VARCHAR(255) DEFAULT ''"),
+            ("attachment_type", "ALTER TABLE feedback_messages ADD COLUMN attachment_type VARCHAR(64) DEFAULT ''"),
+            ("attachment_size", "ALTER TABLE feedback_messages ADD COLUMN attachment_size INTEGER DEFAULT 0"),
+        ):
+            if col not in msg_cols:
+                c.execute(ddl)
         # 商品图标与邮件通知（旧库增量升级）
         prod_cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
         if "icon_path" not in prod_cols:

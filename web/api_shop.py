@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, render_template, request
 
+from core.feedback_files import save_feedback_file
 from core.settings import load_shop_settings
 from shop.guard import guard
 from shop.service import ShopService
@@ -138,6 +139,28 @@ def feedback_start():
     return jsonify(ShopService().user_start_feedback(data.get("contact") or ""))
 
 
+@bp.route("/api/shop/feedback/upload", methods=["POST"])
+def feedback_upload():
+    """客服附件上传（multipart，最大 10MB，图片/文档）。"""
+    form = dict(request.form)
+    ok, reason = _token_ok(form, kind="feedback")
+    if not ok:
+        return jsonify({"code": -1, "msg": reason}), 429
+
+    svc = ShopService()
+    contact, err = svc.validate_feedback_contact(form.get("contact") or "")
+    if err:
+        return jsonify(err), 400
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"code": -1, "msg": "未选择文件"}), 400
+    result, error = save_feedback_file(f.read(), f.filename)
+    if error:
+        return jsonify({"code": -1, "msg": error}), 400
+    return jsonify({"code": 1, "msg": "SUCCESS", "attachment": result})
+
+
 @bp.route("/api/shop/feedback/send", methods=["POST"])
 def feedback_send():
     data = json_body()
@@ -145,8 +168,32 @@ def feedback_send():
     if not ok:
         return jsonify({"code": -1, "msg": reason}), 429
     return jsonify(ShopService().user_send_feedback(
-        data.get("contact") or "", data.get("content") or ""
+        data.get("contact") or "",
+        data.get("content") or "",
+        attachment=data.get("attachment"),
+        base_url=request.host_url,
     ))
+
+
+@bp.route("/api/shop/feedback/notify-settings", methods=["GET", "POST"])
+def feedback_notify_settings():
+    svc = ShopService()
+    if request.method == "GET":
+        ok, reason = _token_ok({"token": request.args.get("token", "")}, kind="search")
+        if not ok:
+            return jsonify({"code": -1, "msg": reason}), 429
+        return jsonify(svc.user_notify_settings(request.args.get("contact") or ""))
+
+    data = json_body()
+    ok, reason = _token_ok(data, kind="feedback")
+    if not ok:
+        return jsonify({"code": -1, "msg": reason}), 429
+    result = svc.user_update_notify_settings(
+        data.get("contact") or "",
+        data.get("email") or "",
+        bool(data.get("enabled")),
+    )
+    return jsonify(result)
 
 
 @bp.route("/api/shop/feedback/pull", methods=["POST"])

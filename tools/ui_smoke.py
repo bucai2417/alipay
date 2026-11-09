@@ -13,6 +13,7 @@ import json
 import os
 import sys
 
+from PIL import Image
 from playwright.sync_api import sync_playwright
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5000").rstrip("/")
@@ -170,6 +171,33 @@ def main():
         page.fill("#queryInput", CONTACT)
         page.click("#queryBtn")
         page.wait_for_selector("text=已发货", timeout=15000)
+
+        # ---------- 客服聊天：附件与通知设置 ----------
+        page.goto(BASE + "/support", wait_until="networkidle")
+        page.fill("#contactInput", CONTACT)
+        page.click("#startBtn")
+        page.wait_for_selector("#chatPanel:not([hidden])", timeout=15000)
+        chat_png = os.path.join(OUT, "ui_chat_upload.png")
+        Image.new("RGB", (120, 120), "#2563eb").save(chat_png, "PNG")
+        page.set_input_files("#fileInput", chat_png)
+        page.wait_for_selector("#attachPreview:not([hidden])", timeout=15000)
+        page.fill("#contentInput", "UI 测试图片附件")
+        page.click("#sendBtn")
+        page.wait_for_selector("#messages .chat-image", timeout=15000)
+        page.screenshot(path=os.path.join(OUT, "ui_support_chat.png"))
+
+        page.click("#notifyBtn")
+        page.wait_for_selector("#notifyModal.show", timeout=5000)
+        assert page.locator("#notifyEmail").count() == 1, "客服通知设置缺少邮箱"
+        page.locator("#notifyModal .btn").first.click()
+
+        # ---------- 后台客服：工单与附件 ----------
+        page.goto(BASE + "/admin/feedback", wait_until="networkidle")
+        assert page.locator("#notifyBtn").count() == 1, "后台客服缺少通知设置"
+        page.locator("#ticketList .card").first.click()
+        page.wait_for_selector("#replyInput", timeout=10000)
+        page.wait_for_selector("#detailMessages .chat-image", timeout=10000)
+        page.screenshot(path=os.path.join(OUT, "ui_admin_feedback.png"))
 
         # ---------- 仪表盘 ----------
         page.goto(BASE + "/admin/", wait_until="networkidle")

@@ -229,6 +229,79 @@ def main():
     msgs = r.get_json().get("messages") or []
     check("用户拉取到回复", any(m.get("sender") == "admin" for m in msgs), msgs)
 
+    # ---------- 客服附件与通知设置 ----------
+    from PIL import Image as _PI
+
+    img_buf = io.BytesIO()
+    _PI.new("RGB", (96, 96), "#22c55e").save(img_buf, "PNG")
+    r = c.post("/api/shop/feedback/upload",
+               data={"token": token, "contact": "tester@example.com",
+                     "file": (io.BytesIO(img_buf.getvalue()), "chat.png")},
+               content_type="multipart/form-data")
+    up = r.get_json()
+    att = up.get("attachment") or {}
+    check("客服上传图片", up.get("code") == 1 and att.get("url")
+          and att.get("is_image") is True, up)
+    r = c.get(att.get("url") or "/missing")
+    check("客服附件可访问", r.status_code == 200 and r.mimetype == "image/png",
+          r.status_code)
+
+    r = c.post("/api/shop/feedback/send", json={
+        "token": token, "contact": "tester@example.com",
+        "content": "图片消息", "attachment": att})
+    check("发送附件消息", r.get_json().get("code") == 1, r.get_json())
+    r = c.post("/api/shop/feedback/pull",
+               json={"token": token, "contact": "tester@example.com"})
+    msgs = r.get_json().get("messages") or []
+    check("消息含附件", any((m.get("attachment") or {}).get("url") == att.get("url")
+                            for m in msgs), msgs[-1:] if msgs else [])
+
+    r = c.post("/api/shop/feedback/upload",
+               data={"token": token, "contact": "tester@example.com",
+                     "file": (io.BytesIO(b"x"), "bad.exe")},
+               content_type="multipart/form-data")
+    check("拒绝可执行附件", r.status_code == 400, r.status_code)
+
+    big = b"a" * (10 * 1024 * 1024 + 1)
+    r = c.post("/api/shop/feedback/upload",
+               data={"token": token, "contact": "tester@example.com",
+                     "file": (io.BytesIO(big), "big.txt")},
+               content_type="multipart/form-data")
+    check("附件超过 10MB 拒绝", r.status_code == 400, r.status_code)
+
+    r = c.get("/api/shop/feedback/notify-settings",
+              query_string={"token": token, "contact": "tester@example.com"})
+    check("客服通知设置读取", r.get_json().get("code") == 1, r.get_json())
+    r = c.post("/api/shop/feedback/notify-settings", json={
+        "token": token, "contact": "tester@example.com",
+        "email": "notify@example.com", "enabled": True})
+    check("客服通知设置保存", r.get_json().get("code") == 1
+          and r.get_json().get("notify_email") == "notify@example.com",
+          r.get_json())
+    r = c.get("/api/admin/feedback/notify")
+    check("管理员通知设置读取", r.status_code == 200, r.get_json())
+    r = c.post("/api/admin/feedback/notify", json={
+        "email": "admin-notify@example.com", "enabled": True})
+    check("管理员通知设置保存", r.status_code == 200
+          and r.get_json().get("success"), r.get_json())
+
+    buf2 = io.BytesIO()
+    _PI.new("RGB", (64, 64), "#123456").save(buf2, "PNG")
+    r = c.post("/api/admin/feedback/upload",
+               data={"file": (io.BytesIO(buf2.getvalue()), "admin.png")},
+               content_type="multipart/form-data")
+    att_admin = (r.get_json().get("attachment") or {})
+    r = c.post(f"/api/admin/feedback/tickets/{ticket_id}/reply",
+               json={"content": "管理员图片", "attachment": att_admin})
+    check("管理员附件回复", r.get_json().get("code") == 1, r.get_json())
+    r = c.post("/api/shop/feedback/pull",
+               json={"token": token, "contact": "tester@example.com"})
+    msgs = r.get_json().get("messages") or []
+    check("用户收到管理员附件",
+          any(m.get("sender") == "admin"
+              and (m.get("attachment") or {}).get("url") == att_admin.get("url")
+              for m in msgs))
+
     # ---------- 码支付协议 ----------
     pid, key = payload["merchant_id"], payload["merchant_key"]
 
@@ -680,6 +753,30 @@ def main():
         check("测试邮件接口", r.get_json().get("success")
               and mock_ssl2.return_value.send_message.called, r.get_json())
 
+    # 客服邮件通知（用户 / 管理员）
+    with patch("smtplib.SMTP_SSL") as mock_fb_user:
+        inst = mock_fb_user.return_value
+        r = c.post(f"/api/admin/feedback/tickets/{ticket_id}/reply",
+                   json={"content": "客服通知测试"})
+        check("客服通知回复接口", r.get_json().get("code") == 1)
+        wait_until(lambda: inst.send_message.called, timeout=8)
+        msg = inst.send_message.call_args[0][0] if inst.send_message.called else None
+        check("客服回复邮件通知用户",
+              msg is not None and msg.get("To") == "notify@example.com",
+              msg.get("To") if msg is not None else None)
+
+    with patch("smtplib.SMTP_SSL") as mock_fb_admin:
+        inst = mock_fb_admin.return_value
+        r = c.post("/api/shop/feedback/send", json={
+            "token": token, "contact": "tester@example.com",
+            "content": "管理员通知测试"})
+        check("用户消息发送接口", r.get_json().get("code") == 1)
+        wait_until(lambda: inst.send_message.called, timeout=8)
+        msg = inst.send_message.call_args[0][0] if inst.send_message.called else None
+        check("客服消息邮件通知管理员",
+              msg is not None and msg.get("To") == "admin-notify@example.com",
+              msg.get("To") if msg is not None else None)
+
     # 关闭邮件，避免后续测试触发真实连接
     c.post("/api/admin/email-config", json={"enabled": False})
 
@@ -689,6 +786,12 @@ def main():
         r = c.get(path)
         check(f"页面 {path}", r.status_code == 200 and needle in r.get_data(as_text=True),
               r.status_code)
+    support_html = c.get("/support").get_data(as_text=True)
+    check("客服页面附件与通知入口",
+          "attachBtn" in support_html and "notifyBtn" in support_html
+          and "chat-messages" in support_html)
+    admin_fb_html = c.get("/admin/feedback").get_data(as_text=True)
+    check("后台客服通知入口", "notifyBtn" in admin_fb_html and "detailPanel" in admin_fb_html)
 
     for path in ["/admin/", "/admin/pay-config", "/admin/orders", "/admin/products",
                  "/admin/shop-orders", "/admin/feedback", "/admin/settings",

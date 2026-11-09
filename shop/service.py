@@ -18,6 +18,7 @@ from core.settings import (
     load_email_config,
     load_shop_settings,
     payment_readiness,
+    save_shop_settings,
 )
 
 from .db import ShopDB
@@ -27,6 +28,10 @@ logger = get_logger("shop.service")
 
 # 发货串行锁：避免监控、回调、补单并发时重复扣库存/重复发货
 _fulfill_lock = threading.Lock()
+
+# 管理员客服邮件通知节流（每工单 60 秒一次，避免刷屏）
+_fb_admin_notify_ts: dict = {}
+_fb_admin_notify_lock = threading.Lock()
 
 
 def _now() -> str:
@@ -449,6 +454,10 @@ class ShopService:
             return None, {"code": -1, "msg": "该备注在订单中无记录，请填写下单时的备注后再试"}
         return contact, None
 
+    def validate_feedback_contact(self, contact):
+        """校验客服身份（下单邮箱必须能匹配到订单）。"""
+        return self._validate_contact_has_order(contact)
+
     def user_start_feedback(self, contact):
         contact, err = self._validate_contact_has_order(contact)
         if err:
@@ -461,14 +470,17 @@ class ShopService:
             "messages": [self._msg_view(m) for m in self.db.list_messages(ticket["id"])],
             "order_count": len(self.db.list_orders_by_contact_exact(contact, limit=50)),
             "closed": ticket.get("status") == "closed",
+            "email_ready": bool(load_email_config().get("enabled")),
+            "notify_email": ticket.get("notify_email") or contact,
+            "notify_enabled": bool(ticket.get("notify_enabled")),
         }
 
-    def user_send_feedback(self, contact, content):
+    def user_send_feedback(self, contact, content, attachment=None, base_url=""):
         contact, err = self._validate_contact_has_order(contact)
         if err:
             return err
         content = str(content or "").strip()
-        if not content:
+        if not content and not (isinstance(attachment, dict) and attachment.get("url")):
             return {"code": -1, "msg": "消息不能为空"}
         ticket = self.db.get_ticket_by_contact(contact) or self.db.get_or_create_ticket(contact)
         if not ticket:
@@ -476,15 +488,116 @@ class ShopService:
         if ticket.get("status") == "closed":
             return {"code": -1, "msg": "该会话已被管理员关闭，暂不能发送消息", "closed": True}
         try:
-            msg = self.db.add_message(ticket["id"], "user", content)
+            msg = self.db.add_message(ticket["id"], "user", content, attachment)
         except Exception as e:
             return {"code": -1, "msg": str(e)}
+        ticket = self.db.get_ticket(ticket["id"])
+        try:
+            self._notify_feedback_admin(ticket, content, attachment, base_url)
+        except Exception:
+            pass
         return {
             "code": 1,
             "msg": "SUCCESS",
-            "ticket": self._ticket_view(self.db.get_ticket(ticket["id"])),
+            "ticket": self._ticket_view(ticket),
             "message": self._msg_view(msg),
         }
+
+    def _notify_feedback_admin(self, ticket, content, attachment, base_url):
+        cfg = load_email_config()
+        if not cfg.get("enabled"):
+            return
+        settings = self.settings()
+        if not settings.get("feedback_notify_admin"):
+            return
+        to_email = str(settings.get("feedback_notify_email") or "").strip()
+        if not mailer.is_email(to_email):
+            return
+        ticket_id = ticket.get("id")
+        now_ts = time.time()
+        with _fb_admin_notify_lock:
+            last = float(_fb_admin_notify_ts.get(ticket_id) or 0)
+            if now_ts - last < 60:
+                return
+            _fb_admin_notify_ts[ticket_id] = now_ts
+        message = content or (
+            f"[附件] {attachment.get('name', '')}" if isinstance(attachment, dict) else ""
+        )
+        subject, html_body, text_body = mailer.feedback_notify_content(
+            "admin", ticket, message, base_url
+        )
+        from core.tasks import submit_mail
+
+        submit_mail(mailer.send_email, cfg, to_email, subject, html_body, text_body)
+
+    def _notify_feedback_user(self, ticket, content, attachment, base_url):
+        cfg = load_email_config()
+        if not cfg.get("enabled"):
+            return
+        if not int(ticket.get("notify_enabled") if ticket.get("notify_enabled") is not None else 1):
+            return
+        to_email = str(ticket.get("notify_email") or ticket.get("contact") or "").strip()
+        if not mailer.is_email(to_email):
+            return
+        message = content or (
+            f"[附件] {attachment.get('name', '')}" if isinstance(attachment, dict) else ""
+        )
+        subject, html_body, text_body = mailer.feedback_notify_content(
+            "user", ticket, message, base_url
+        )
+        from core.tasks import submit_mail
+
+        submit_mail(mailer.send_email, cfg, to_email, subject, html_body, text_body)
+
+    def user_notify_settings(self, contact):
+        contact, err = self._validate_contact_has_order(contact)
+        if err:
+            return err
+        ticket = self.db.get_ticket_by_contact(contact) or self.db.get_or_create_ticket(contact)
+        return {
+            "code": 1,
+            "ticket_id": ticket.get("id"),
+            "notify_email": ticket.get("notify_email") or contact,
+            "notify_enabled": bool(ticket.get("notify_enabled")),
+            "email_ready": bool(load_email_config().get("enabled")),
+        }
+
+    def user_update_notify_settings(self, contact, email, enabled):
+        contact, err = self._validate_contact_has_order(contact)
+        if err:
+            return err
+        email = str(email or "").strip() or contact
+        if enabled and not mailer.is_email(email):
+            return {"code": -1, "msg": "请填写有效的通知邮箱"}
+        if len(email) > 200:
+            return {"code": -1, "msg": "邮箱过长"}
+        ticket = self.db.get_ticket_by_contact(contact) or self.db.get_or_create_ticket(contact)
+        self.db.update_ticket_notify(ticket["id"], email, bool(enabled))
+        return {
+            "code": 1,
+            "msg": "SUCCESS",
+            "notify_email": email,
+            "notify_enabled": bool(enabled),
+            "email_ready": bool(load_email_config().get("enabled")),
+        }
+
+    def admin_notify_settings(self):
+        settings = self.settings()
+        return {
+            "email": settings.get("feedback_notify_email") or "",
+            "enabled": bool(settings.get("feedback_notify_admin")),
+            "email_ready": bool(load_email_config().get("enabled")),
+        }
+
+    def admin_update_notify_settings(self, email, enabled):
+        email = str(email or "").strip()
+        if enabled and not mailer.is_email(email):
+            return {"code": -1, "msg": "请填写有效的管理员通知邮箱"}
+        save_shop_settings({
+            "feedback_notify_email": email,
+            "feedback_notify_admin": bool(enabled),
+        })
+        return {"code": 1, "msg": "SUCCESS", **self.admin_notify_settings()}
 
     def user_pull_feedback(self, contact):
         contact, err = self._validate_contact_has_order(contact)
@@ -515,17 +628,23 @@ class ShopService:
             "messages": [self._msg_view(m) for m in self.db.list_messages(ticket_id)],
         }
 
-    def admin_reply_ticket(self, ticket_id, content):
-        if not self.db.get_ticket(ticket_id):
+    def admin_reply_ticket(self, ticket_id, content, attachment=None, base_url=""):
+        ticket = self.db.get_ticket(ticket_id)
+        if not ticket:
             return {"code": -1, "msg": "工单不存在"}
         try:
-            msg = self.db.add_message(ticket_id, "admin", content)
+            msg = self.db.add_message(ticket_id, "admin", content, attachment)
         except Exception as e:
             return {"code": -1, "msg": str(e)}
+        ticket = self.db.get_ticket(ticket_id)
+        try:
+            self._notify_feedback_user(ticket, content, attachment, base_url)
+        except Exception:
+            pass
         return {
             "code": 1,
             "msg": "SUCCESS",
-            "ticket": self._ticket_view(self.db.get_ticket(ticket_id)),
+            "ticket": self._ticket_view(ticket),
             "message": self._msg_view(msg),
         }
 
@@ -568,6 +687,10 @@ class ShopService:
             "last_message": t.get("last_message") or "",
             "last_sender": t.get("last_sender") or "",
             "unread": bool(t.get("unread")),
+            "notify_email": t.get("notify_email") or t.get("contact") or "",
+            "notify_enabled": bool(
+                int(t.get("notify_enabled") if t.get("notify_enabled") is not None else 1)
+            ),
             "created_at": t.get("created_at"),
             "updated_at": t.get("updated_at"),
         }
@@ -575,10 +698,22 @@ class ShopService:
     def _msg_view(self, m):
         if not m:
             return None
+        attachment = None
+        if m.get("attachment_url"):
+            attachment = {
+                "url": m.get("attachment_url"),
+                "name": m.get("attachment_name") or "",
+                "type": m.get("attachment_type") or "",
+                "size": int(m.get("attachment_size") or 0),
+                "is_image": str(m.get("attachment_type") or "").startswith("image/")
+                           or str(m.get("attachment_name") or "").lower().endswith(
+                               (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")),
+            }
         return {
             "id": m.get("id"),
             "ticket_id": m.get("ticket_id"),
             "sender": m.get("sender"),
             "content": m.get("content"),
+            "attachment": attachment,
             "created_at": m.get("created_at"),
         }

@@ -103,6 +103,8 @@ DEFAULT_SHOP_SETTINGS = {
     "shop_notice": "",
     "max_qty_per_order": 50,
     "notify_admin_pushplus": True,
+    "feedback_notify_admin": False,
+    "feedback_notify_email": "",
 }
 
 
@@ -260,11 +262,13 @@ def is_payment_ready(cfg: dict) -> bool:
 
 def load_shop_settings() -> dict:
     s = _get_raw(SHOP_KEY, DEFAULT_SHOP_SETTINGS)
-    for k in ("enabled", "public_shop_enabled", "notify_admin_pushplus"):
+    for k in ("enabled", "public_shop_enabled", "notify_admin_pushplus",
+              "feedback_notify_admin"):
         s[k] = _bool(s.get(k), DEFAULT_SHOP_SETTINGS[k])
     s["max_qty_per_order"] = _int(s.get("max_qty_per_order"), 50, 1, 100)
     s["shop_title"] = str(s.get("shop_title") or "卡密商城")[:64]
     s["shop_notice"] = str(s.get("shop_notice") or "")[:500]
+    s["feedback_notify_email"] = str(s.get("feedback_notify_email") or "")[:200]
     return s
 
 
@@ -274,11 +278,13 @@ def save_shop_settings(patch: dict) -> dict:
     for k in DEFAULT_SHOP_SETTINGS:
         if k in (patch or {}):
             data[k] = patch[k]
-    for k in ("enabled", "public_shop_enabled", "notify_admin_pushplus"):
+    for k in ("enabled", "public_shop_enabled", "notify_admin_pushplus",
+              "feedback_notify_admin"):
         data[k] = _bool(data.get(k), current.get(k, True))
     data["max_qty_per_order"] = _int(data.get("max_qty_per_order"), 50, 1, 100)
     data["shop_title"] = str(data.get("shop_title") or "卡密商城")[:64]
     data["shop_notice"] = str(data.get("shop_notice") or "")[:500]
+    data["feedback_notify_email"] = str(data.get("feedback_notify_email") or "")[:200]
     db.settings_set(SHOP_KEY, data)
     return load_shop_settings()
 

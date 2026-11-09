@@ -1,8 +1,9 @@
 {% extends "admin_base.html" %}
 {% block title %}客服工单 - 管理后台{% endblock %}
 {% block heading %}客服工单{% endblock %}
-{% block subheading %}买家按备注发起的客服会话{% endblock %}
+{% block subheading %}与买家沟通，支持图片/文档附件与新消息邮件通知{% endblock %}
 {% block head_actions %}
+  <button class="btn" id="notifyBtn">通知设置</button>
   <button class="btn primary" id="refreshBtn">刷新</button>
 {% endblock %}
 
@@ -22,7 +23,7 @@
       <button class="btn sm" onclick="batchTickets('close')">批量关闭</button>
       <button class="btn sm danger" onclick="batchTickets('delete')">批量删除</button>
     </div>
-    <div id="ticketList" style="max-height:62vh;overflow-y:auto;">
+    <div id="ticketList" style="max-height:66vh;overflow-y:auto;">
       <div class="empty">加载中...</div>
     </div>
   </div>
@@ -31,30 +32,93 @@
     <div class="empty">请选择左侧工单查看会话</div>
   </div>
 </div>
+
+<div class="modal-mask" id="notifyModal">
+  <div class="modal" style="max-width:440px;">
+    <h3>管理员新消息通知</h3>
+    <p class="small muted">用户发送客服消息时，通过系统邮箱通知管理员（同一工单 60 秒最多一次）。</p>
+    <label class="field"><span>接收通知的邮箱</span>
+      <input id="notifyEmail" type="email" placeholder="admin@example.com">
+    </label>
+    <label class="switch" style="margin-bottom:12px;">
+      <input type="checkbox" id="notifyEnabled"><span>启用管理员邮件通知</span>
+    </label>
+    <p class="small muted" id="notifyHint"></p>
+    <div class="actions">
+      <button class="btn" onclick="closeNotify()">取消</button>
+      <button class="btn primary" id="notifySave">保存</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+const $ = (id) => document.getElementById(id);
 let currentTicket = null;
+let detailTimer = null;
+let lastMsgId = 0;
+let pendingAttachment = null;
+let emailReady = false;
 
 function escText(v) {
-  return String(v == null ? '' : v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+  return String(v == null ? '' : v)
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
-function fmtTime(s) { return s || ''; }
+
+function fmtSize(n) {
+  n = Number(n || 0);
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function attachmentHtml(a) {
+  if (!a) return '';
+  if (a.is_image) {
+    return `<a class="chat-image-link" href="${escText(a.url)}" target="_blank" rel="noopener">
+      <img class="chat-image" src="${escText(a.url)}" alt="${escText(a.name)}"></a>`;
+  }
+  return `<a class="chat-file" href="${escText(a.url)}" download="${escText(a.name)}">
+    <span class="chat-file-icon">📄</span>
+    <span class="chat-file-info"><b>${escText(a.name)}</b><span class="small muted">${fmtSize(a.size)}</span></span>
+    <span class="chat-file-download">下载</span></a>`;
+}
+
+function messageHtml(m) {
+  const side = m.sender === 'admin' ? 'admin' : 'user';
+  const text = m.content
+    ? `<div>${escText(m.content).replace(/\n/g, '<br>')}</div>` : '';
+  return `<div class="msg ${side}" data-id="${m.id}">
+    ${text}${attachmentHtml(m.attachment)}
+    <span class="time">${escText(m.created_at)}</span>
+  </div>`;
+}
+
+function messagesHtml(messages) {
+  return (messages || []).map(messageHtml).join('');
+}
+
+function scrollMessages(box, force) {
+  if (!box) return;
+  const near = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
+  if (force || near) box.scrollTop = box.scrollHeight;
+}
 
 async function loadTickets() {
-  const params = new URLSearchParams({ page: 1, page_size: 100 });
-  const status = document.getElementById('statusFilter').value;
+  const params = new URLSearchParams({page: 1, page_size: 100});
+  const status = $('statusFilter').value;
   if (status) params.set('status', status);
-  if (document.getElementById('unreadOnly').checked) params.set('unread', 'true');
+  if ($('unreadOnly').checked) params.set('unread', 'true');
   try {
     const data = await api('/api/admin/feedback/tickets?' + params.toString());
     const list = data.tickets || [];
     if (!list.length) {
-      document.getElementById('ticketList').innerHTML = '<div class="empty">暂无工单</div>';
+      $('ticketList').innerHTML = '<div class="empty">暂无工单</div>';
       return;
     }
-    document.getElementById('ticketList').innerHTML = list.map(t => `
+    $('ticketList').innerHTML = list.map(t => `
       <div class="card" style="padding:12px;margin-bottom:8px;cursor:pointer;${t.id === currentTicket ? 'border-color:var(--primary);' : ''}"
            onclick="openTicket(${t.id})">
         <div class="spread">
@@ -62,9 +126,13 @@ async function loadTickets() {
             <input type="checkbox" class="ticket-check" value="${t.id}" onclick="event.stopPropagation()">
             <b style="font-size:14px;">${escText(t.contact)}</b>
           </div>
-          ${t.unread ? '<span class="badge red">未读</span>' : `<span class="badge">${({open:'待回复',replied:'已回复',closed:'已关闭'})[t.status] || t.status}</span>`}
+          ${t.unread
+            ? '<span class="badge red">未读</span>'
+            : `<span class="badge">${({open:'待回复',replied:'已回复',closed:'已关闭'})[t.status] || t.status}</span>`}
         </div>
-        <div class="small muted" style="margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escText(t.last_message || '（暂无消息）')}</div>
+        <div class="small muted" style="margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          ${escText(t.last_message || '（暂无消息）')}
+        </div>
         <div class="small muted">${escText(t.updated_at || '')}</div>
       </div>`).join('');
   } catch (e) { toast(e.message, 'error'); }
@@ -73,61 +141,123 @@ async function loadTickets() {
 async function openTicket(id) {
   try {
     const data = await api('/api/admin/feedback/tickets/' + id);
+    if (data.code !== 1) throw new Error(data.msg || '工单不存在');
     currentTicket = id;
     const t = data.ticket;
     const msgs = data.messages || [];
-    const panel = document.getElementById('detailPanel');
-    panel.innerHTML = `
-      <div class="spread">
+    lastMsgId = msgs.reduce((mx, m) => Math.max(mx, Number(m.id) || 0), 0);
+    const notifyText = t.notify_enabled && t.notify_email
+      ? `用户邮件通知：${escText(t.notify_email)}`
+      : '用户未开启邮件通知';
+    $('detailPanel').innerHTML = `
+      <div class="spread" style="align-items:flex-start;">
         <div>
           <h2 style="margin:0;">${escText(t.contact)}</h2>
-          <div class="small muted">会话 #${t.id} · 创建 ${escText(t.created_at)}</div>
+          <div class="small muted">会话 #${t.id} · 创建 ${escText(t.created_at)} · ${notifyText}</div>
         </div>
         <div class="row">
-          <span class="badge ${t.status === 'closed' ? 'red' : 'green'}">${({open:'待回复',replied:'已回复',closed:'已关闭'})[t.status] || t.status}</span>
+          <span class="badge ${t.status === 'closed' ? 'red' : 'green'}" id="ticketBadge">
+            ${({open:'待回复',replied:'已回复',closed:'已关闭'})[t.status] || t.status}
+          </span>
+          <span id="newMsgTag" class="badge blue" hidden>有新消息</span>
           ${t.status !== 'closed'
-            ? `<button class="btn sm" onclick="setTicketStatus('closed')">关闭会话</button>`
-            : `<button class="btn sm success" onclick="setTicketStatus('open')">重新开启</button>`}
+            ? '<button class="btn sm" onclick="setTicketStatus(\'closed\')">关闭会话</button>'
+            : '<button class="btn sm success" onclick="setTicketStatus(\'open\')">重新开启</button>'}
         </div>
       </div>
-      <div class="ticket-messages" id="msgBox">
-        ${msgs.map(m => `<div class="msg ${m.sender === 'admin' ? 'admin' : 'user'}">${escText(m.content)}<span class="time">${escText(m.created_at)}</span></div>`).join('')}
-      </div>
-      <div class="row">
-        <input id="replyInput" type="text" placeholder="${t.status === 'closed' ? '会话已关闭，可先重新开启' : '输入回复内容，回车发送'}"
-               style="flex:1;min-width:200px;" maxlength="2000" ${t.status === 'closed' ? 'disabled' : ''}>
+      <div class="ticket-messages" id="detailMessages">${messagesHtml(msgs)}</div>
+      <div class="attach-preview" id="adminAttachPreview" hidden></div>
+      <div class="composer">
+        <button class="icon-btn" id="adminAttachBtn" title="发送附件（≤10MB）">📎</button>
+        <input id="replyInput" type="text" maxlength="2000"
+               placeholder="${t.status === 'closed' ? '会话已关闭，请先重新开启' : '输入回复，Enter 发送'}"
+               ${t.status === 'closed' ? 'disabled' : ''}>
         <button class="btn primary" id="replyBtn" ${t.status === 'closed' ? 'disabled' : ''}>回复</button>
-      </div>`;
-    const box = document.getElementById('msgBox');
+      </div>
+      <div class="chat-foot small muted">支持图片与文档，单个附件 ≤ 10MB；会话每 8 秒自动刷新。</div>
+      <input type="file" id="adminFileInput" hidden>`;
+    bindDetailEvents(t);
+    const box = $('detailMessages');
     box.scrollTop = box.scrollHeight;
-    const input = document.getElementById('replyInput');
-    if (input && !input.disabled) {
-      input.addEventListener('keydown', e => { if (e.key === 'Enter') reply(); });
-    }
-    const btn = document.getElementById('replyBtn');
-    if (btn) btn.addEventListener('click', reply);
     loadTickets();
+    if (detailTimer) clearInterval(detailTimer);
+    detailTimer = setInterval(() => refreshTicket(id), 8000);
   } catch (e) { toast(e.message, 'error'); }
 }
 
+function bindDetailEvents(t) {
+  const input = $('replyInput');
+  if (input && !input.disabled) {
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') reply(); });
+  }
+  const replyBtn = $('replyBtn');
+  if (replyBtn) replyBtn.addEventListener('click', reply);
+  const attachBtn = $('adminAttachBtn');
+  if (attachBtn) attachBtn.addEventListener('click', () => $('adminFileInput').click());
+  const fileInput = $('adminFileInput');
+  if (fileInput) {
+    fileInput.addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (f) uploadAdminAttachment(f);
+      e.target.value = '';
+    });
+  }
+}
+
+async function refreshTicket(id) {
+  if (currentTicket !== id) return;
+  try {
+    const data = await api('/api/admin/feedback/tickets/' + id);
+    if (data.code !== 1) return;
+    const msgs = data.messages || [];
+    const maxId = msgs.reduce((mx, m) => Math.max(mx, Number(m.id) || 0), 0);
+    if (maxId > lastMsgId) {
+      const box = $('detailMessages');
+      const near = box && (box.scrollHeight - box.scrollTop - box.clientHeight < 120);
+      if (box) {
+        box.innerHTML = messagesHtml(msgs);
+        if (near) box.scrollTop = box.scrollHeight;
+      }
+      lastMsgId = maxId;
+      const tag = $('newMsgTag');
+      if (tag) {
+        tag.hidden = false;
+        setTimeout(() => { if (tag) tag.hidden = true; }, 4000);
+      }
+      loadTickets();
+    }
+    const badge = $('ticketBadge');
+    if (badge && data.ticket) {
+      const st = data.ticket.status;
+      badge.className = 'badge ' + (st === 'closed' ? 'red' : 'green');
+      badge.textContent = ({open:'待回复',replied:'已回复',closed:'已关闭'})[st] || st;
+    }
+  } catch (e) { /* 忽略 */ }
+}
+
 async function reply() {
-  const input = document.getElementById('replyInput');
+  const input = $('replyInput');
   const content = input.value.trim();
-  if (!content) return;
+  if (!content && !pendingAttachment) return;
+  const btn = $('replyBtn');
+  btn.disabled = true;
   try {
     const data = await api(`/api/admin/feedback/tickets/${currentTicket}/reply`, {
-      method: 'POST', body: { content }
+      method: 'POST',
+      body: { content, attachment: pendingAttachment },
     });
     if (data.code !== 1) throw new Error(data.msg || '回复失败');
     input.value = '';
+    setAdminAttachment(null);
     openTicket(currentTicket);
   } catch (e) { toast(e.message, 'error'); }
+  finally { if (btn) btn.disabled = false; }
 }
 
 async function setTicketStatus(status) {
   try {
     const data = await api(`/api/admin/feedback/tickets/${currentTicket}/status`, {
-      method: 'POST', body: { status }
+      method: 'POST', body: { status },
     });
     if (data.code !== 1) throw new Error(data.msg || '操作失败');
     toast('已更新', 'success');
@@ -135,12 +265,35 @@ async function setTicketStatus(status) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-document.getElementById('refreshBtn').addEventListener('click', loadTickets);
-document.getElementById('statusFilter').addEventListener('change', loadTickets);
-document.getElementById('unreadOnly').addEventListener('change', loadTickets);
+function setAdminAttachment(att) {
+  pendingAttachment = att;
+  const box = $('adminAttachPreview');
+  if (!box) return;
+  if (!att) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = att.is_image
+    ? `<div class="attach-item"><img src="${escText(att.url)}" alt=""><span>${escText(att.name)}</span>
+       <button type="button" id="adminRemoveAttach">×</button></div>`
+    : `<div class="attach-item"><span class="chat-file-icon">📄</span>
+       <span>${escText(att.name)} · ${fmtSize(att.size)}</span>
+       <button type="button" id="adminRemoveAttach">×</button></div>`;
+  const btn = $('adminRemoveAttach');
+  if (btn) btn.onclick = () => setAdminAttachment(null);
+}
+
+async function uploadAdminAttachment(file) {
+  if (file.size > 10 * 1024 * 1024) { toast('附件不能超过 10MB', 'error'); return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await api('/api/admin/feedback/upload', { method: 'POST', body: fd });
+    setAdminAttachment(r.attachment);
+  } catch (e) { toast(e.message, 'error'); }
+}
 
 function selectedTicketIds() {
-  return Array.from(document.querySelectorAll('.ticket-check:checked')).map(el => parseInt(el.value, 10));
+  return Array.from(document.querySelectorAll('.ticket-check:checked'))
+    .map(el => parseInt(el.value, 10));
 }
 
 async function batchTickets(action) {
@@ -158,11 +311,57 @@ async function batchTickets(action) {
     toast(r.message || '操作完成', 'success');
     if (action === 'delete' && ids.includes(currentTicket)) {
       currentTicket = null;
-      document.getElementById('detailPanel').innerHTML = '<div class="empty">请选择左侧工单查看会话</div>';
+      if (detailTimer) clearInterval(detailTimer);
+      $('detailPanel').innerHTML = '<div class="empty">请选择左侧工单查看会话</div>';
     }
     loadTickets();
   } catch (e) { toast(e.message, 'error'); }
 }
+
+/* ---------- 管理员通知设置 ---------- */
+function openNotify() {
+  $('notifyModal').classList.add('show');
+  loadNotifySettings();
+}
+function closeNotify() { $('notifyModal').classList.remove('show'); }
+
+async function loadNotifySettings() {
+  try {
+    const r = await api('/api/admin/feedback/notify');
+    emailReady = !!r.email_ready;
+    $('notifyEmail').value = r.email || '';
+    $('notifyEnabled').checked = !!r.enabled;
+    $('notifyHint').textContent = r.email_ready
+      ? '系统邮件已配置，保存后立即生效。'
+      : '系统邮件尚未配置/启用，请先在「系统设置 → 邮件通知」完成配置。';
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function saveNotify() {
+  try {
+    const r = await api('/api/admin/feedback/notify', {
+      method: 'POST',
+      body: {
+        email: $('notifyEmail').value.trim(),
+        enabled: $('notifyEnabled').checked,
+      },
+    });
+    toast('通知设置已保存', 'success');
+    closeNotify();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+$('refreshBtn').addEventListener('click', () => {
+  loadTickets();
+  if (currentTicket) refreshTicket(currentTicket);
+});
+$('statusFilter').addEventListener('change', loadTickets);
+$('unreadOnly').addEventListener('change', loadTickets);
+$('notifyBtn').addEventListener('click', openNotify);
+$('notifySave').addEventListener('click', saveNotify);
+$('notifyModal').addEventListener('click', e => {
+  if (e.target.id === 'notifyModal') closeNotify();
+});
 
 loadTickets();
 </script>

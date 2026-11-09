@@ -39,7 +39,7 @@ def _load_secret_key() -> str:
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.secret_key = _load_secret_key()
-    app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # 上传图片上限 8MB
+    app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 客服附件 10MB + multipart 开销
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.config.update(
@@ -73,6 +73,19 @@ def create_app() -> Flask:
         if os.path.basename(filename) != filename:
             return "", 404
         return send_from_directory(os.path.join(DATA_DIR, "uploads"), filename)
+
+    @app.route("/feedback-files/<path:filename>")
+    def feedback_file(filename):
+        if os.path.basename(filename) != filename:
+            return "", 404
+        return send_from_directory(os.path.join(DATA_DIR, "feedback_files"), filename)
+
+    @app.errorhandler(413)
+    def too_large(_e):
+        if request.path.startswith("/api/"):
+            return jsonify({"success": False, "message": "文件超过大小限制"}), 413
+        return render_template("error.html", title="文件过大",
+                               message="上传文件超过大小限制"), 413
 
     @app.template_filter("strip_html")
     def strip_html(value):

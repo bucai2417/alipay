@@ -1,29 +1,84 @@
 {% extends "base.html" %}
-{% block title %}联系客服 - {{ settings.shop_title }}{% endblock %}
+{% block title %}在线客服 - {{ settings.shop_title }}{% endblock %}
 {% block content %}
-<div class="query-box">
-  <div class="card page-card">
-    <h1 style="font-size:22px;">联系客服</h1>
-    <p class="muted small mt8">请先填写下单时使用的邮箱验证身份，再发送消息。</p>
-
-    <div class="row mt16">
-      <input id="contactInput" type="email" placeholder="下单邮箱" style="flex:1;min-width:220px;">
-      <button class="btn primary" id="startBtn">进入会话</button>
+<div class="support-layout">
+  <section class="card support-chat">
+    <div class="support-head">
+      <div class="support-brand">
+        <span class="chat-dot"></span>
+        <div>
+          <div class="support-title">在线客服</div>
+          <div class="small muted">留言会尽快回复，支持图片与文档附件</div>
+        </div>
+      </div>
+      <button class="btn sm" id="notifyBtn">邮件通知设置</button>
     </div>
 
-    <div id="chatPanel" style="display:none;" class="mt16">
-      <div class="spread">
-        <span class="small muted">会话 #<span id="ticketId"></span> · <span id="ticketStatus"></span></span>
-        <button class="btn sm" id="refreshBtn">刷新</button>
-      </div>
-      <div class="ticket-messages" id="messages"></div>
+    <div id="verifyPanel" class="verify-panel">
+      <div class="verify-icon">💬</div>
+      <h2>联系客服</h2>
+      <p class="muted small">填写下单时使用的邮箱验证身份，即可与客服沟通。</p>
       <div class="row">
-        <input id="contentInput" type="text" placeholder="输入消息，回车发送" style="flex:1;min-width:200px;" maxlength="2000">
+        <input id="contactInput" type="email" placeholder="下单邮箱" style="flex:1;min-width:200px;">
+        <button class="btn primary" id="startBtn">进入会话</button>
+      </div>
+      <div id="hint" class="mt16"></div>
+    </div>
+
+    <div id="chatPanel" class="chat-panel" hidden>
+      <div class="chat-status-row">
+        <span class="badge orange" id="ticketStatusBadge">等待回复</span>
+        <span class="small muted" id="notifyState">邮件通知未开启</span>
+      </div>
+      <div class="chat-messages" id="messages"></div>
+      <button class="new-msg-btn" id="newMsgBtn" hidden>有新消息 ↓</button>
+      <div class="attach-preview" id="attachPreview" hidden></div>
+      <div class="composer">
+        <button class="icon-btn" id="attachBtn" title="发送附件（最大 10MB）">📎</button>
+        <textarea id="contentInput" rows="1" maxlength="2000"
+                  placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
         <button class="btn primary" id="sendBtn">发送</button>
       </div>
-      <p class="small muted mt8">客服回复后会出现在会话中；关闭的会话无法继续发送消息。</p>
+      <div class="chat-foot small muted">
+        会话 #<span id="ticketId"></span> · 单个附件 ≤ 10MB（图片、PDF、压缩包等）
+      </div>
+      <input type="file" id="fileInput" hidden>
     </div>
-    <div id="hint" class="mt16"></div>
+  </section>
+
+  <aside class="support-side">
+    <div class="card panel">
+      <h3>常见问题</h3>
+      <ul class="tips">
+        <li>订单查询请使用下单邮箱</li>
+        <li>支付后未收到卡密，请提供订单号</li>
+        <li>图片会直接显示，其他附件可点击下载</li>
+        <li>附件最大 10MB，支持常见图片与文档格式</li>
+      </ul>
+    </div>
+    <div class="card panel">
+      <h3>新消息通知</h3>
+      <p class="small muted">客服回复时，可通过系统邮箱发送通知。</p>
+      <div id="notifySummary" class="small">未开启</div>
+      <button class="btn sm mt8" id="notifyBtn2">设置通知邮箱</button>
+    </div>
+  </aside>
+</div>
+
+<div class="modal-mask" id="notifyModal">
+  <div class="modal" style="max-width:440px;">
+    <h3>新消息邮件通知</h3>
+    <label class="field"><span>接收通知的邮箱</span>
+      <input id="notifyEmail" type="email" placeholder="you@example.com">
+    </label>
+    <label class="switch" style="margin-bottom:12px;">
+      <input type="checkbox" id="notifyEnabled"><span>客服回复时发送邮件通知</span>
+    </label>
+    <p class="small muted" id="notifyHint"></p>
+    <div class="actions">
+      <button class="btn" id="notifyCancel">取消</button>
+      <button class="btn primary" id="notifySave">保存</button>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -31,76 +86,272 @@
 {% block scripts %}
 <script>
 const TOKEN = {{ token|tojson }};
+const SHOP_TITLE = {{ settings.shop_title|tojson }};
 let contact = '';
+let ticket = null;
 let timer = null;
+let lastMessageId = 0;
+let pendingAttachment = null;
+let emailReady = false;
+
+const $ = (id) => document.getElementById(id);
+const messagesBox = $('messages');
 
 function esc(v) {
-  return String(v == null ? '' : v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-}
-function showHint(msg) {
-  document.getElementById('hint').innerHTML = `<div class="hint-box">${esc(msg)}</div>`;
-}
-
-function renderMessages(messages) {
-  const box = document.getElementById('messages');
-  box.innerHTML = (messages || []).map(m => `
-    <div class="msg ${m.sender === 'admin' ? 'admin' : 'user'}">
-      ${esc(m.content)}
-      <span class="time">${esc(m.created_at)}</span>
-    </div>`).join('');
-  box.scrollTop = box.scrollHeight;
+  return String(v == null ? '' : v)
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
-function renderTicket(data) {
-  document.getElementById('ticketId').textContent = data.ticket ? data.ticket.id : '';
-  document.getElementById('ticketStatus').textContent =
-    data.ticket ? ({open:'等待回复', replied:'已回复', closed:'已关闭'}[data.ticket.status] || data.ticket.status) : '';
-  renderMessages(data.messages);
+function fmtSize(n) {
+  n = Number(n || 0);
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
 }
 
-async function call(path, payload) {
+function showHint(text) {
+  $('hint').innerHTML = text ? `<div class="hint-box">${esc(text)}</div>` : '';
+}
+
+function attachmentHtml(a) {
+  if (!a) return '';
+  if (a.is_image) {
+    return `<a class="chat-image-link" href="${esc(a.url)}" target="_blank" rel="noopener">
+      <img class="chat-image" src="${esc(a.url)}" alt="${esc(a.name)}"></a>`;
+  }
+  return `<a class="chat-file" href="${esc(a.url)}" download="${esc(a.name)}">
+    <span class="chat-file-icon">📄</span>
+    <span class="chat-file-info"><b>${esc(a.name)}</b><span class="small muted">${fmtSize(a.size)}</span></span>
+    <span class="chat-file-download">下载</span></a>`;
+}
+
+function messageHtml(m) {
+  const side = m.sender === 'admin' ? 'admin' : 'user';
+  const text = m.content
+    ? `<div class="chat-text">${esc(m.content).replace(/\n/g, '<br>')}</div>` : '';
+  return `<div class="chat-msg ${side}" data-id="${m.id}">
+    <div class="chat-bubble">${text}${attachmentHtml(m.attachment)}</div>
+    <div class="chat-time">${esc(m.created_at)}</div>
+  </div>`;
+}
+
+function scrollToBottom(force) {
+  const near = messagesBox.scrollHeight - messagesBox.scrollTop - messagesBox.clientHeight < 90;
+  if (force || near) messagesBox.scrollTop = messagesBox.scrollHeight;
+}
+
+function appendMessages(messages) {
+  let added = 0;
+  (messages || []).forEach(m => {
+    const mid = Number(m.id) || 0;
+    if (mid > lastMessageId) {
+      messagesBox.insertAdjacentHTML('beforeend', messageHtml(m));
+      lastMessageId = Math.max(lastMessageId, mid);
+      added += 1;
+    }
+  });
+  if (added) scrollToBottom(false);
+  return added;
+}
+
+async function call(path, payload, method) {
   const resp = await fetch(path, {
-    method: 'POST',
+    method: method || 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(Object.assign({ token: TOKEN, contact }, payload || {}))
+    body: JSON.stringify(Object.assign({token: TOKEN, contact}, payload || {})),
   });
   return resp.json();
 }
 
+function updateStatus(status) {
+  const map = {open: '等待回复', replied: '已回复', closed: '已关闭'};
+  const cls = status === 'closed' ? 'red' : status === 'replied' ? 'green' : 'orange';
+  const el = $('ticketStatusBadge');
+  el.textContent = map[status] || status || '等待回复';
+  el.className = 'badge ' + cls;
+}
+
+function updateNotifyState(email, enabled) {
+  const summary = $('notifySummary');
+  if (enabled && email) {
+    $('notifyState').textContent = `邮件通知：${email}`;
+    summary.textContent = `已开启：${email}`;
+  } else {
+    $('notifyState').textContent = '邮件通知未开启';
+    summary.textContent = '未开启';
+  }
+  summary.dataset.email = email || '';
+  summary.dataset.enabled = enabled ? '1' : '0';
+}
+
 async function start() {
-  contact = document.getElementById('contactInput').value.trim();
-  if (contact.length < 4) { showHint('请填写完整备注（至少 4 个字符）'); return; }
-  const data = await call('/api/shop/feedback/start');
-  if (data.code !== 1) { showHint(data.msg || '无法进入会话'); return; }
-  document.getElementById('hint').innerHTML = '';
-  document.getElementById('chatPanel').style.display = 'block';
-  renderTicket(data);
-  if (timer) clearInterval(timer);
-  timer = setInterval(pull, 10000);
+  contact = $('contactInput').value.trim();
+  const emailRe = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+  if (!emailRe.test(contact)) { showHint('请填写有效的下单邮箱'); return; }
+  try {
+    const data = await call('/api/shop/feedback/start');
+    if (data.code !== 1) { showHint(data.msg || '无法进入会话'); return; }
+    showHint('');
+    ticket = data.ticket || {};
+    emailReady = !!data.email_ready;
+    $('verifyPanel').hidden = true;
+    $('chatPanel').hidden = false;
+    $('ticketId').textContent = ticket.id || '';
+    updateStatus(ticket.status);
+    updateNotifyState(data.notify_email || contact, !!data.notify_enabled);
+    lastMessageId = 0;
+    messagesBox.innerHTML = '';
+    appendMessages(data.messages || []);
+    scrollToBottom(true);
+    if (timer) clearInterval(timer);
+    timer = setInterval(pull, 5000);
+  } catch (e) {
+    showHint('进入会话失败，请稍后重试');
+  }
 }
 
 async function pull() {
   if (!contact) return;
   try {
     const data = await call('/api/shop/feedback/pull');
-    if (data.code === 1) renderTicket(data);
-  } catch (e) {}
+    if (data.code !== 1) return;
+    const added = appendMessages(data.messages || []);
+    if (added) {
+      const near = messagesBox.scrollHeight - messagesBox.scrollTop - messagesBox.clientHeight < 120;
+      if (!near) $('newMsgBtn').hidden = false;
+      document.title = `● 新消息 - ${SHOP_TITLE}`;
+      setTimeout(() => { document.title = `在线客服 - ${SHOP_TITLE}`; }, 6000);
+    }
+    if (data.ticket) {
+      ticket = data.ticket;
+      updateStatus(ticket.status);
+    }
+  } catch (e) { /* 网络抖动忽略 */ }
+}
+
+function setPendingAttachment(att) {
+  pendingAttachment = att;
+  const box = $('attachPreview');
+  if (!att) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = att.is_image
+    ? `<div class="attach-item"><img src="${esc(att.url)}" alt=""><span>${esc(att.name)}</span>
+       <button type="button" id="removeAttach">×</button></div>`
+    : `<div class="attach-item"><span class="chat-file-icon">📄</span>
+       <span>${esc(att.name)} · ${fmtSize(att.size)}</span>
+       <button type="button" id="removeAttach">×</button></div>`;
+  const removeBtn = $('removeAttach');
+  if (removeBtn) removeBtn.onclick = () => setPendingAttachment(null);
+}
+
+async function uploadAttachment(file) {
+  if (file.size > 10 * 1024 * 1024) { alert('附件不能超过 10MB'); return; }
+  const fd = new FormData();
+  fd.append('token', TOKEN);
+  fd.append('contact', contact);
+  fd.append('file', file);
+  const btn = $('attachBtn');
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/shop/feedback/upload', {method: 'POST', body: fd});
+    const data = await resp.json();
+    if (data.code !== 1) { alert(data.msg || '上传失败'); return; }
+    setPendingAttachment(data.attachment);
+  } catch (e) {
+    alert('上传失败，请稍后重试');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function send() {
-  const input = document.getElementById('contentInput');
+  const input = $('contentInput');
   const content = input.value.trim();
-  if (!content) return;
-  const data = await call('/api/shop/feedback/send', { content });
-  if (data.code !== 1) { showHint(data.msg || '发送失败'); return; }
-  input.value = '';
-  renderTicket({ ticket: data.ticket, messages: [data.message] });
-  pull();
+  if (!content && !pendingAttachment) return;
+  const btn = $('sendBtn');
+  btn.disabled = true;
+  try {
+    const data = await call('/api/shop/feedback/send', {
+      content, attachment: pendingAttachment,
+    });
+    if (data.code !== 1) { alert(data.msg || '发送失败'); return; }
+    input.value = '';
+    input.style.height = 'auto';
+    setPendingAttachment(null);
+    $('newMsgBtn').hidden = true;
+    const appended = data.message ? appendMessages([data.message]) : 0;
+    if (!appended) await pull();
+    scrollToBottom(true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
-document.getElementById('startBtn').addEventListener('click', start);
-document.getElementById('refreshBtn').addEventListener('click', pull);
-document.getElementById('sendBtn').addEventListener('click', send);
-document.getElementById('contentInput').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+function openNotify() {
+  if (!contact) { showHint('请先进入会话'); return; }
+  $('notifyEmail').value = $('notifySummary').dataset.email || contact;
+  $('notifyEnabled').checked = $('notifySummary').dataset.enabled === '1';
+  $('notifyHint').textContent = emailReady ? '' : '系统邮件通知尚未启用，保存后将在管理员启用后生效。';
+  $('notifyModal').classList.add('show');
+  loadNotifySettings();
+}
+
+async function loadNotifySettings() {
+  try {
+    const url = `/api/shop/feedback/notify-settings?token=${encodeURIComponent(TOKEN)}`
+      + `&contact=${encodeURIComponent(contact)}`;
+    const resp = await fetch(url);
+    const d = await resp.json();
+    if (d.code !== 1) return;
+    emailReady = !!d.email_ready;
+    $('notifyEmail').value = d.notify_email || contact;
+    $('notifyEnabled').checked = !!d.notify_enabled;
+    $('notifyHint').textContent = d.email_ready ? '' : '系统邮件通知尚未启用，保存后将在管理员启用后生效。';
+    updateNotifyState(d.notify_email, d.notify_enabled);
+  } catch (e) { /* 忽略 */ }
+}
+
+async function saveNotify() {
+  const email = $('notifyEmail').value.trim();
+  const enabled = $('notifyEnabled').checked;
+  const data = await call('/api/shop/feedback/notify-settings', {email, enabled});
+  if (data.code !== 1) { alert(data.msg || '保存失败'); return; }
+  updateNotifyState(data.notify_email, data.notify_enabled);
+  $('notifyModal').classList.remove('show');
+}
+
+$('startBtn').addEventListener('click', start);
+$('contactInput').addEventListener('keydown', e => { if (e.key === 'Enter') start(); });
+$('sendBtn').addEventListener('click', send);
+$('contentInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$('contentInput').addEventListener('input', e => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+});
+$('attachBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) uploadAttachment(f);
+  e.target.value = '';
+});
+$('newMsgBtn').addEventListener('click', () => {
+  scrollToBottom(true);
+  $('newMsgBtn').hidden = true;
+});
+$('notifyBtn').addEventListener('click', openNotify);
+$('notifyBtn2').addEventListener('click', openNotify);
+$('notifyCancel').addEventListener('click', () => $('notifyModal').classList.remove('show'));
+$('notifySave').addEventListener('click', saveNotify);
+$('notifyModal').addEventListener('click', e => {
+  if (e.target.id === 'notifyModal') $('notifyModal').classList.remove('show');
+});
+document.title = `在线客服 - ${SHOP_TITLE}`;
 </script>
 {% endblock %}

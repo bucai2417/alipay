@@ -553,9 +553,10 @@ class ShopDB:
         with self.db.write_lock:
             cur = c.execute(
                 """INSERT INTO feedback_tickets
-                   (contact, status, last_message, last_sender, created_at, updated_at)
-                   VALUES (?, 'open', '', 'user', ?, ?)""",
-                (contact, now, now),
+                   (contact, status, last_message, last_sender, notify_email,
+                    notify_enabled, created_at, updated_at)
+                   VALUES (?, 'open', '', 'user', ?, 1, ?, ?)""",
+                (contact, contact, now, now),
             )
             c.commit()
             tid = cur.lastrowid
@@ -608,6 +609,10 @@ class ShopDB:
             return None
         d = dict(row)
         d["unread"] = self._ticket_unread(d)
+        d["notify_email"] = d.get("notify_email") or d.get("contact") or ""
+        d["notify_enabled"] = int(
+            d.get("notify_enabled") if d.get("notify_enabled") is not None else 1
+        )
         return d
 
     def _ticket_unread(self, t):
@@ -639,9 +644,19 @@ class ShopDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def add_message(self, ticket_id, sender, content):
+    def add_message(self, ticket_id, sender, content, attachment=None):
         content = str(content or "").strip()
-        if not content:
+        attachment = attachment if isinstance(attachment, dict) else {}
+        att_url = str(attachment.get("url") or "").strip()[:255]
+        if att_url and not att_url.startswith("/feedback-files/"):
+            att_url = ""
+        att_name = str(attachment.get("name") or "").strip()[:255] if att_url else ""
+        att_type = str(attachment.get("type") or "").strip()[:64] if att_url else ""
+        try:
+            att_size = int(attachment.get("size") or 0) if att_url else 0
+        except (TypeError, ValueError):
+            att_size = 0
+        if not content and not att_url:
             raise ValueError("消息不能为空")
         if sender not in ("user", "admin"):
             raise ValueError("sender 无效")
@@ -650,17 +665,21 @@ class ShopDB:
         c = self._c()
         now = now_str()
         status = "open" if sender == "user" else "replied"
+        last_message = content[:200] if content else f"[附件] {att_name}"[:200]
         with self.db.write_lock:
             cur = c.execute(
-                """INSERT INTO feedback_messages (ticket_id, sender, content, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (ticket_id, sender, content, now),
+                """INSERT INTO feedback_messages
+                   (ticket_id, sender, content, attachment_url, attachment_name,
+                    attachment_type, attachment_size, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (ticket_id, sender, content, att_url, att_name, att_type,
+                 att_size, now),
             )
             c.execute(
                 """UPDATE feedback_tickets
                    SET status = ?, last_message = ?, last_sender = ?, updated_at = ?
                    WHERE id = ?""",
-                (status, content[:200], sender, now, ticket_id),
+                (status, last_message, sender, now, ticket_id),
             )
             c.commit()
             mid = cur.lastrowid
@@ -675,6 +694,18 @@ class ShopDB:
             c.execute(
                 "UPDATE feedback_tickets SET status = ?, updated_at = ? WHERE id = ?",
                 (status, now_str(), ticket_id),
+            )
+            c.commit()
+        return self.get_ticket(ticket_id)
+
+    def update_ticket_notify(self, ticket_id, email, enabled):
+        c = self._c()
+        with self.db.write_lock:
+            c.execute(
+                """UPDATE feedback_tickets
+                   SET notify_email = ?, notify_enabled = ?, updated_at = ?
+                   WHERE id = ?""",
+                (str(email or "")[:255], 1 if enabled else 0, now_str(), ticket_id),
             )
             c.commit()
         return self.get_ticket(ticket_id)

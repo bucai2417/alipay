@@ -17,6 +17,7 @@ from alipay_pay.orders import OrderStore
 from alipay_pay.protocol import generate_sign
 from config import BASE_DIR, DATA_DIR
 from core import mailer
+from core.feedback_files import save_feedback_file
 from core.html_utils import clean_description
 from core.images import save_image_bytes
 from core.reports import pay_orders_for_export, revenue_trend, shop_orders_for_export
@@ -712,10 +713,44 @@ def admin_feedback_ticket(ticket_id):
     return jsonify(result), (200 if result.get("code") == 1 else 404)
 
 
+@bp.route("/api/admin/feedback/upload", methods=["POST"])
+@login_required
+def admin_feedback_upload():
+    """客服回复附件上传（图片/文档，最大 10MB）。"""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return fail("未选择文件")
+    result, error = save_feedback_file(f.read(), f.filename)
+    if error:
+        return fail(error)
+    return ok(attachment=result)
+
+
+@bp.route("/api/admin/feedback/notify", methods=["GET", "POST"])
+@login_required
+def admin_feedback_notify():
+    svc = ShopService()
+    if request.method == "GET":
+        return ok(**svc.admin_notify_settings())
+    data = json_body()
+    result = svc.admin_update_notify_settings(
+        data.get("email") or "", bool(data.get("enabled"))
+    )
+    if result.get("code") != 1:
+        return fail(result.get("msg", "保存失败"))
+    return ok(**{k: v for k, v in result.items() if k not in ("code", "msg")})
+
+
 @bp.route("/api/admin/feedback/tickets/<int:ticket_id>/reply", methods=["POST"])
 @login_required
 def admin_feedback_reply(ticket_id):
-    result = ShopService().admin_reply_ticket(ticket_id, json_body().get("content") or "")
+    data = json_body()
+    result = ShopService().admin_reply_ticket(
+        ticket_id,
+        data.get("content") or "",
+        attachment=data.get("attachment"),
+        base_url=request.host_url,
+    )
     return jsonify(result), (200 if result.get("code") == 1 else 400)
 
 
