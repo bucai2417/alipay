@@ -7,6 +7,7 @@ import io
 import json
 import os
 import time
+import uuid
 
 from flask import (Blueprint, Response, jsonify, render_template, request,
                    send_file, session)
@@ -16,6 +17,7 @@ from alipay_pay.monitor import mark_paid, monitoring_status, run_monitoring_cycl
 from alipay_pay.orders import OrderStore
 from alipay_pay.protocol import generate_sign
 from config import BASE_DIR, DATA_DIR
+from core import mailer
 from core.reports import pay_orders_for_export, revenue_trend, shop_orders_for_export
 from core.settings import (
     change_admin_password,
@@ -23,10 +25,13 @@ from core.settings import (
     gen_merchant_credentials,
     is_configured,
     load_alipay_config,
+    load_email_config,
     load_shop_settings,
     payment_readiness,
     save_alipay_config,
+    save_email_config,
     save_shop_settings,
+    EMAIL_PRESETS,
 )
 from core.storage import db
 from shop.service import ShopService
@@ -34,6 +39,37 @@ from web.auth import login_required
 from web.helpers import fail, int_arg, json_body, ok
 
 bp = Blueprint("admin", __name__)
+
+ALLOWED_DESC_TAGS = [
+    "p", "br", "strong", "b", "em", "i", "u", "h3", "h4",
+    "ul", "ol", "li", "blockquote", "a", "img", "span",
+]
+ALLOWED_DESC_ATTRS = {
+    "a": ["href", "title", "target", "rel"],
+    "img": ["src", "alt", "width", "height"],
+}
+
+
+def clean_description(value: str) -> str:
+    """清洗商品富文本描述，保留常用排版与图片。"""
+    raw = str(value or "")
+    if not raw.strip():
+        return ""
+    try:
+        import bleach
+
+        cleaned = bleach.clean(
+            raw,
+            tags=ALLOWED_DESC_TAGS,
+            attributes=ALLOWED_DESC_ATTRS,
+            protocols=["http", "https"],
+            strip=True,
+        )
+    except ImportError:
+        import html
+
+        cleaned = html.escape(raw)
+    return cleaned[:20000]
 
 
 # ---------------- 页面 ----------------
@@ -391,12 +427,13 @@ def admin_products():
         return fail("发货模式无效")
     product = svc.create_product(
         name=name,
-        description=str(data.get("description") or ""),
+        description=clean_description(data.get("description")),
         price=price,
         fulfill_mode=fulfill_mode,
         generate_config=data.get("generate_config") or {},
         status=int(data.get("status", 1)),
         sort_order=int(data.get("sort_order") or 0),
+        icon_path=str(data.get("icon_path") or "").strip(),
     )
     return ok(product=product)
 
@@ -417,9 +454,13 @@ def admin_product_detail(product_id):
         return ok(message="已删除")
     data = json_body()
     fields = {}
-    for k in ("name", "description", "fulfill_mode", "generate_config"):
+    for k in ("name", "fulfill_mode", "generate_config"):
         if k in data:
             fields[k] = data[k]
+    if "description" in data:
+        fields["description"] = clean_description(data.get("description"))
+    if "icon_path" in data:
+        fields["icon_path"] = str(data.get("icon_path") or "").strip()
     if "price" in data:
         fields["price"] = float(data["price"])
     if "status" in data:
@@ -735,6 +776,62 @@ def admin_shop_settings():
     if request.method == "GET":
         return ok(settings=load_shop_settings())
     return ok(settings=save_shop_settings(json_body()))
+
+
+@bp.route("/api/admin/upload-image", methods=["POST"])
+@login_required
+def upload_image():
+    """商品图标 / 描述图片上传，返回可公开访问的 /uploads/<file> 地址。"""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return fail("未选择文件")
+    raw = f.read()
+    if len(raw) > 8 * 1024 * 1024:
+        return fail("图片不能超过 8MB")
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(raw))
+        img.verify()
+        fmt = (img.format or "").upper()
+    except Exception:
+        return fail("文件不是有效的图片")
+    ext = {"PNG": ".png", "JPEG": ".jpg", "JPG": ".jpg", "GIF": ".gif",
+           "WEBP": ".webp", "BMP": ".bmp"}.get(fmt)
+    if not ext:
+        return fail("不支持的图片格式")
+
+    upload_dir = os.path.join(DATA_DIR, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    with open(os.path.join(upload_dir, filename), "wb") as out:
+        out.write(raw)
+    return ok(url=f"/uploads/{filename}", filename=filename)
+
+
+@bp.route("/api/admin/email-config", methods=["GET", "POST"])
+@login_required
+def admin_email_config():
+    if request.method == "GET":
+        return ok(config=load_email_config(), presets=EMAIL_PRESETS)
+    cfg = save_email_config(json_body())
+    return ok(config=cfg, message="邮件配置已保存")
+
+
+@bp.route("/api/admin/email-test", methods=["POST"])
+@login_required
+def admin_email_test():
+    data = json_body()
+    to = str(data.get("to") or "").strip()
+    if not mailer.is_email(to):
+        return fail("收件邮箱格式不正确")
+    cfg = load_email_config()
+    title = load_shop_settings().get("shop_title") or "卡密商城"
+    subject, html_body, text_body = mailer.test_email_content(title)
+    ok_flag, error = mailer.send_email(cfg, to, subject, html_body, text_body)
+    if ok_flag:
+        return ok(message="测试邮件已发送")
+    return fail(f"发送失败: {error}")
 
 
 @bp.route("/api/admin/password", methods=["POST"])

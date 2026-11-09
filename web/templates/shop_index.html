@@ -24,17 +24,22 @@
     <div class="product-grid">
       {% for p in products %}
       <a class="card product-card" href="/shop/p/{{ p.id }}">
-        <div class="spread">
-          <h3>{{ p.name }}</h3>
-          {% if p.fulfill_mode == 'generate' %}
-            <span class="badge purple">自动生成</span>
-          {% elif p.stock_count > 0 %}
-            <span class="badge green">有货</span>
-          {% else %}
-            <span class="badge red">缺货</span>
-          {% endif %}
+        <div class="product-card-head">
+          {% if p.icon_path %}<img class="product-icon" src="{{ p.icon_path }}" alt="{{ p.name }}">{% endif %}
+          <div style="flex:1;min-width:0;">
+            <div class="spread">
+              <h3>{{ p.name }}</h3>
+              {% if p.fulfill_mode == 'generate' %}
+                <span class="badge purple">自动生成</span>
+              {% elif p.stock_count > 0 %}
+                <span class="badge green">有货</span>
+              {% else %}
+                <span class="badge red">缺货</span>
+              {% endif %}
+            </div>
+          </div>
         </div>
-        <div class="desc">{{ p.description or '暂无商品描述' }}</div>
+        <div class="desc">{{ p.description|strip_html or '暂无商品描述' }}</div>
         <div class="spread">
           <span class="price">{{ '%.2f'|format(p.price) }}</span>
           <span class="small muted nowrap">已售 {{ p.sold_count }}</span>

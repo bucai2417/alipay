@@ -22,8 +22,39 @@ logger = get_logger("settings")
 CONFIG_KEY = "alipay_config"
 SHOP_KEY = "shop_settings"
 ADMIN_KEY = "admin_auth"
+EMAIL_KEY = "email_config"
 
 SENSITIVE_FIELDS = ("private_key", "alipay_public_key", "merchant_key", "pushplus_token")
+
+EMAIL_PRESETS = {
+    "qq": {"host": "smtp.qq.com", "port": 465, "security": "ssl",
+           "note": "QQ 邮箱需开启 SMTP 并使用授权码"},
+    "163": {"host": "smtp.163.com", "port": 465, "security": "ssl",
+            "note": "163 邮箱使用客户端授权码"},
+    "126": {"host": "smtp.126.com", "port": 465, "security": "ssl",
+            "note": "126 邮箱使用客户端授权码"},
+    "aliyun": {"host": "smtp.aliyun.com", "port": 465, "security": "ssl",
+               "note": "阿里云邮箱使用授权码"},
+    "exmail": {"host": "smtp.exmail.qq.com", "port": 465, "security": "ssl",
+               "note": "腾讯企业邮，使用登录密码或客户端专用密码"},
+    "gmail": {"host": "smtp.gmail.com", "port": 465, "security": "ssl",
+              "note": "Gmail 需开启两步验证并使用应用专用密码"},
+    "outlook": {"host": "smtp-mail.outlook.com", "port": 587, "security": "starttls",
+                "note": "Outlook / Microsoft 365"},
+    "custom": {"host": "", "port": 465, "security": "ssl", "note": "自定义 SMTP 服务器"},
+}
+
+DEFAULT_EMAIL_CONFIG = {
+    "enabled": False,
+    "preset": "qq",
+    "host": "smtp.qq.com",
+    "port": 465,
+    "security": "ssl",
+    "username": "",
+    "password": "",
+    "from_name": "卡密商城",
+    "from_email": "",
+}
 
 DEFAULT_ALIPAY_CONFIG = {
     "app_id": "",
@@ -252,8 +283,50 @@ def save_shop_settings(patch: dict) -> dict:
     return load_shop_settings()
 
 
-# ---------- 后台账号 ----------
+# ---------- 邮件通知 ----------
 
+def load_email_config() -> dict:
+    cfg = _get_raw(EMAIL_KEY, DEFAULT_EMAIL_CONFIG)
+    pw = cfg.get("password") or ""
+    if is_encrypted(pw):
+        cfg["password"] = decrypt_value(pw)
+    cfg["enabled"] = _bool(cfg.get("enabled"), False)
+    cfg["port"] = _int(cfg.get("port"), 465, 1, 65535)
+    sec = str(cfg.get("security") or "ssl").lower()
+    cfg["security"] = sec if sec in ("ssl", "starttls", "none") else "ssl"
+    cfg["preset"] = str(cfg.get("preset") or "custom")
+    for k in ("host", "username", "from_name", "from_email"):
+        cfg[k] = str(cfg.get(k) or "").strip()
+    cfg["from_email"] = cfg["from_email"] or cfg["username"]
+    return cfg
+
+
+def save_email_config(patch: dict) -> dict:
+    current = _get_raw(EMAIL_KEY, DEFAULT_EMAIL_CONFIG)
+    data = {}
+    for k in ("enabled", "preset", "host", "port", "security",
+              "username", "from_name", "from_email"):
+        if k in (patch or {}):
+            data[k] = patch[k]
+    if "password" in (patch or {}):
+        pw = str(patch.get("password") or "")
+        if pw.strip():  # 留空保持原密码
+            data["password"] = encrypt_value(pw)
+
+    merged = _merge(current, data)
+    merged["enabled"] = _bool(merged.get("enabled"), False)
+    merged["port"] = _int(merged.get("port"), 465, 1, 65535)
+    sec = str(merged.get("security") or "ssl").lower()
+    merged["security"] = sec if sec in ("ssl", "starttls", "none") else "ssl"
+    merged["preset"] = str(merged.get("preset") or "custom")
+    for k in ("host", "username", "from_name", "from_email"):
+        merged[k] = str(merged.get(k) or "").strip()
+    db.settings_set(EMAIL_KEY, merged)
+    logger.info("邮件配置已更新（enabled=%s, host=%s）", merged.get("enabled"), merged.get("host"))
+    return load_email_config()
+
+
+# ---------- 后台账号 ----------
 def _default_admin() -> dict:
     return {"username": "admin", "password_hash": generate_password_hash("admin123")}
 

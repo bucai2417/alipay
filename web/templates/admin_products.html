@@ -39,7 +39,27 @@
       <label class="field"><span>价格（元）</span><input id="p_price" type="number" step="0.01" min="0.01"></label>
       <label class="field"><span>排序（越小越靠前）</span><input id="p_sort" type="number" value="0"></label>
     </div>
-    <label class="field"><span>商品描述</span><textarea id="p_desc" rows="3"></textarea></label>
+    <label class="field"><span>商品图标（可选）</span>
+      <div class="row" style="gap:10px;">
+        <img id="p_icon_preview" class="form-icon-preview" style="display:none;" alt="商品图标">
+        <button type="button" class="btn sm" id="p_icon_btn">上传图标</button>
+        <button type="button" class="btn sm danger" id="p_icon_clear" style="display:none;">移除</button>
+      </div>
+      <input type="file" id="p_icon_file" accept="image/*" hidden>
+      <input type="hidden" id="p_icon_path">
+    </label>
+    <label class="field"><span>商品描述（支持图文排版）</span>
+      <div class="rich-toolbar">
+        <button type="button" data-cmd="bold"><b>B</b></button>
+        <button type="button" data-cmd="italic"><i>I</i></button>
+        <button type="button" data-cmd="underline"><u>U</u></button>
+        <button type="button" data-cmd="insertUnorderedList">• 列表</button>
+        <button type="button" data-cmd="formatBlock" data-value="h3">标题</button>
+        <button type="button" id="desc_image_btn">插入图片</button>
+      </div>
+      <div id="p_desc_editor" class="rich-editor" contenteditable="true"></div>
+      <input type="file" id="desc_image_file" accept="image/*" hidden>
+    </label>
     <div class="grid-2">
       <label class="field"><span>发货方式</span>
         <select id="p_mode">
@@ -120,6 +140,90 @@
 let editingId = null;
 let currentProductId = null;
 
+const descEditor = document.getElementById('p_desc_editor');
+let savedRange = null;
+
+function setIcon(path) {
+  const img = document.getElementById('p_icon_preview');
+  const clearBtn = document.getElementById('p_icon_clear');
+  document.getElementById('p_icon_path').value = path || '';
+  if (path) {
+    img.src = path;
+    img.style.display = 'block';
+    clearBtn.style.display = 'inline-flex';
+  } else {
+    img.style.display = 'none';
+    clearBtn.style.display = 'none';
+  }
+}
+
+async function uploadImage(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await api('/api/admin/upload-image', { method: 'POST', body: fd });
+  return r.url;
+}
+
+document.getElementById('p_icon_btn').addEventListener('click', () => {
+  document.getElementById('p_icon_file').click();
+});
+document.getElementById('p_icon_file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    setIcon(await uploadImage(f));
+    toast('图标已上传', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+  e.target.value = '';
+});
+document.getElementById('p_icon_clear').addEventListener('click', () => setIcon(''));
+
+function saveDescSelection() {
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount && descEditor.contains(sel.anchorNode)) {
+    savedRange = sel.getRangeAt(0).cloneRange();
+  }
+}
+['keyup', 'mouseup', 'blur'].forEach(ev => descEditor.addEventListener(ev, saveDescSelection));
+
+function restoreDescSelection() {
+  descEditor.focus();
+  if (savedRange) {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(savedRange);
+  }
+}
+
+document.querySelectorAll('.rich-toolbar [data-cmd]').forEach(btn => {
+  btn.addEventListener('mousedown', e => e.preventDefault());
+  btn.addEventListener('click', () => {
+    restoreDescSelection();
+    document.execCommand(btn.dataset.cmd, false, btn.dataset.value || null);
+    saveDescSelection();
+  });
+});
+
+document.getElementById('desc_image_btn').addEventListener('mousedown', e => {
+  e.preventDefault();
+  saveDescSelection();
+});
+document.getElementById('desc_image_btn').addEventListener('click', () => {
+  document.getElementById('desc_image_file').click();
+});
+document.getElementById('desc_image_file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const url = await uploadImage(f);
+    restoreDescSelection();
+    document.execCommand('insertImage', false, url);
+    saveDescSelection();
+    toast('图片已插入描述', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+  e.target.value = '';
+});
+
 function openModal(id) { document.getElementById(id).classList.add('show'); }
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
 
@@ -170,7 +274,8 @@ function openNewProduct() {
   document.getElementById('editProductId').value = '';
   document.getElementById('p_name').value = '';
   document.getElementById('p_price').value = '';
-  document.getElementById('p_desc').value = '';
+  descEditor.innerHTML = '';
+  setIcon('');
   document.getElementById('p_mode').value = 'stock';
   document.getElementById('p_status').value = '1';
   document.getElementById('p_sort').value = '0';
@@ -191,7 +296,8 @@ async function editProduct(id) {
     document.getElementById('editProductId').value = id;
     document.getElementById('p_name').value = p.name || '';
     document.getElementById('p_price').value = p.price;
-    document.getElementById('p_desc').value = p.description || '';
+    descEditor.innerHTML = p.description || '';
+    setIcon(p.icon_path || '');
     document.getElementById('p_mode').value = p.fulfill_mode || 'stock';
     document.getElementById('p_status').value = String(p.status);
     document.getElementById('p_sort').value = p.sort_order || 0;
@@ -214,7 +320,8 @@ async function saveProduct() {
   const payload = {
     name,
     price,
-    description: document.getElementById('p_desc').value,
+    description: descEditor.innerHTML,
+    icon_path: document.getElementById('p_icon_path').value,
     fulfill_mode: mode,
     status: parseInt(document.getElementById('p_status').value, 10),
     sort_order: parseInt(document.getElementById('p_sort').value || '0', 10),

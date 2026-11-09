@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS products (
     stock_count INTEGER DEFAULT 0,
     sold_count INTEGER DEFAULT 0,
     sort_order INTEGER DEFAULT 0,
+    icon_path VARCHAR(255) DEFAULT '',
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL
 );
@@ -83,6 +84,9 @@ CREATE TABLE IF NOT EXISTS shop_orders (
     status VARCHAR(16) NOT NULL DEFAULT 'pending',
     card_payload TEXT DEFAULT '',
     fail_reason TEXT DEFAULT '',
+    email_status TINYINT(1) DEFAULT 0,
+    email_error VARCHAR(255) DEFAULT '',
+    email_sent_at DATETIME,
     created_at DATETIME NOT NULL,
     paid_at DATETIME,
     fulfilled_at DATETIME
@@ -180,6 +184,18 @@ class Database:
         cols = {r[1] for r in c.execute("PRAGMA table_info(feedback_tickets)").fetchall()}
         if "admin_read_at" not in cols:
             c.execute("ALTER TABLE feedback_tickets ADD COLUMN admin_read_at DATETIME")
+        # 商品图标与邮件通知（旧库增量升级）
+        prod_cols = {r[1] for r in c.execute("PRAGMA table_info(products)").fetchall()}
+        if "icon_path" not in prod_cols:
+            c.execute("ALTER TABLE products ADD COLUMN icon_path VARCHAR(255) DEFAULT ''")
+        order_cols = {r[1] for r in c.execute("PRAGMA table_info(shop_orders)").fetchall()}
+        for col, ddl in (
+            ("email_status", "ALTER TABLE shop_orders ADD COLUMN email_status TINYINT(1) DEFAULT 0"),
+            ("email_error", "ALTER TABLE shop_orders ADD COLUMN email_error VARCHAR(255) DEFAULT ''"),
+            ("email_sent_at", "ALTER TABLE shop_orders ADD COLUMN email_sent_at DATETIME"),
+        ):
+            if col not in order_cols:
+                c.execute(ddl)
         c.commit()
         logger.info("数据库已就绪: %s", self.db_path)
 

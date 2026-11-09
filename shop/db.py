@@ -22,7 +22,7 @@ class ShopDB:
     # ---------- 商品 ----------
 
     def create_product(self, name, description, price, fulfill_mode="stock",
-                       generate_config=None, status=1, sort_order=0):
+                       generate_config=None, status=1, sort_order=0, icon_path=""):
         c = self._c()
         now = now_str()
         gen_cfg = json.dumps(generate_config or {}, ensure_ascii=False)
@@ -30,10 +30,10 @@ class ShopDB:
             cur = c.execute(
                 """INSERT INTO products
                    (name, description, price, status, fulfill_mode, generate_config,
-                    stock_count, sold_count, sort_order, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)""",
+                    stock_count, sold_count, sort_order, icon_path, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)""",
                 (name, description or "", float(price), int(status), fulfill_mode,
-                 gen_cfg, int(sort_order or 0), now, now),
+                 gen_cfg, int(sort_order or 0), icon_path or "", now, now),
             )
             c.commit()
             pid = cur.lastrowid
@@ -43,6 +43,7 @@ class ShopDB:
         allowed = {
             "name", "description", "price", "status", "fulfill_mode",
             "generate_config", "sort_order", "stock_count", "sold_count",
+            "icon_path",
         }
         updates, params = [], []
         for k, v in fields.items():
@@ -132,6 +133,7 @@ class ShopDB:
         except Exception:
             d["generate_config"] = {}
         d["price"] = float(d.get("price") or 0)
+        d["icon_path"] = d.get("icon_path") or ""
         return d
 
     # ---------- 卡密 ----------
@@ -516,7 +518,23 @@ class ShopDB:
         d = dict(row)
         d["price"] = float(d.get("price") or 0)
         d["qty"] = int(d.get("qty") or 1)
+        d["email_status"] = int(d.get("email_status") or 0)
+        d["email_error"] = d.get("email_error") or ""
+        d["email_sent_at"] = d.get("email_sent_at")
         return d
+
+    def update_email_status(self, order_id, status, error=""):
+        """邮件状态：0 未处理 / 1 成功 / 2 失败 / 3 未启用 / 4 无有效邮箱。"""
+        c = self._c()
+        sent_at = now_str() if int(status) == 1 else None
+        with self.db.write_lock:
+            c.execute(
+                """UPDATE shop_orders
+                   SET email_status = ?, email_error = ?, email_sent_at = ?
+                   WHERE id = ?""",
+                (int(status), (error or "")[:255], sent_at, order_id),
+            )
+            c.commit()
 
     # ---------- 客服工单 ----------
 

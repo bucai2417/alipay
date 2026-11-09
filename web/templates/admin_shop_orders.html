@@ -30,9 +30,9 @@
       <thead><tr>
         <th style="width:34px;"><input type="checkbox" id="checkAll"></th>
         <th>订单号</th><th>商品</th><th>数量</th><th>金额</th>
-        <th>备注</th><th>支付单号</th><th>状态</th><th>时间</th><th style="width:200px;">操作</th>
+        <th>邮箱</th><th>邮件</th><th>支付单号</th><th>状态</th><th>时间</th><th style="width:200px;">操作</th>
       </tr></thead>
-      <tbody id="shopRows"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody>
+      <tbody id="shopRows"><tr><td colspan="11" class="empty">加载中...</td></tr></tbody>
     </table>
   </div>
   <div class="pager">
@@ -57,6 +57,15 @@ let page = 1;
 const pageSize = 20;
 let total = 0;
 
+const EMAIL_TEXT = {0: '未发送', 1: '已发送', 2: '失败', 3: '未启用', 4: '无邮箱'};
+const EMAIL_CLASS = {0: '', 1: 'green', 2: 'red', 3: '', 4: 'orange'};
+
+function emailBadge(o) {
+  const s = Number(o.email_status || 0);
+  const title = o.email_error ? ` title="${esc(o.email_error)}"` : '';
+  return `<span class="badge ${EMAIL_CLASS[s] || ''}"${title}>${EMAIL_TEXT[s] || s}</span>`;
+}
+
 function closeModal() { document.getElementById('cardsModal').classList.remove('show'); }
 
 function viewCards(orderNo, title) {
@@ -79,7 +88,7 @@ async function load() {
     document.getElementById('totalText').textContent = `共 ${total} 笔`;
     document.getElementById('checkAll').checked = false;
     if (!window.__orders.length) {
-      document.getElementById('shopRows').innerHTML = '<tr><td colspan="10" class="empty">暂无订单</td></tr>';
+      document.getElementById('shopRows').innerHTML = '<tr><td colspan="11" class="empty">暂无订单</td></tr>';
     } else {
       document.getElementById('shopRows').innerHTML = window.__orders.map(o => `
         <tr>
@@ -89,6 +98,7 @@ async function load() {
           <td>${o.qty}</td>
           <td>¥${fmtMoney(o.price * o.qty)}</td>
           <td class="small">${esc(o.contact || '-')}</td>
+          <td>${emailBadge(o)}</td>
           <td class="mono small">${esc(o.payment_out_trade_no)}</td>
           <td><span class="badge ${SHOP_STATUS_CLASS[o.status] || ''}">${SHOP_STATUS_TEXT[o.status] || esc(o.status)}</span></td>
           <td class="small">${esc(o.created_at)}${o.paid_at ? '<br>' + esc(o.paid_at) : ''}</td>

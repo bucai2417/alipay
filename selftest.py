@@ -85,9 +85,44 @@ def main():
     check("导入卡密去重", res.get("success") and res.get("imported") == 3
           and res.get("stock_count") == 3, res)
 
+    # ---------- 商品图标与富文本描述 ----------
+    from PIL import Image as _Image
+
+    icon_buf = io.BytesIO()
+    _Image.new("RGB", (64, 64), "#2563eb").save(icon_buf, "PNG")
+    r = c.post("/api/admin/upload-image",
+               data={"file": (io.BytesIO(icon_buf.getvalue()), "icon.png")},
+               content_type="multipart/form-data")
+    up = r.get_json()
+    check("上传商品图片", up.get("success") and str(up.get("url", "")).startswith("/uploads/"), up)
+    icon_url = up.get("url")
+    r = c.get(icon_url)
+    check("上传图片可访问", r.status_code == 200 and r.mimetype == "image/png", r.status_code)
+
+    r = c.put(f"/api/admin/products/{gen_product['id']}", json={
+        "description": '<p>富文本说明</p><script>alert(1)</script>'
+                       f'<img src="{icon_url}" alt="示例">',
+        "icon_path": icon_url,
+    })
+    p_desc = (r.get_json().get("product") or {}).get("description") or ""
+    check("描述富文本清洗", "富文本说明" in p_desc and "<img" in p_desc
+          and "<script" not in p_desc, p_desc)
+    html = c.get(f"/shop/p/{gen_product['id']}").get_data(as_text=True)
+    check("商品详情渲染图文", "富文本说明" in html and icon_url in html)
+
     from shop.guard import guard
 
+    guard.max_requests = 1000
+    guard.feedback_max_requests = 1000
     token = guard.issue_token()
+
+    # ---------- 下单必须填写邮箱 ----------
+    r = c.post("/api/shop/order", json={
+        "token": token, "product_id": gen_product["id"], "qty": 1,
+        "contact": "not-an-email",
+    })
+    check("下单强制邮箱", r.status_code == 400
+          and "邮箱" in (r.get_json().get("msg") or ""), r.get_json())
 
     # ---------- 未配置支付时必须拒绝下单 ----------
     r = c.post("/api/shop/order", json={
@@ -305,6 +340,7 @@ def main():
     html = r.get_data(as_text=True)
     check("接口文档页", r.status_code == 200 and "签名与认证" in html
           and "参数拼装" in html and "在线调试" in html
+          and "对接配置清单" in html
           and payload["merchant_id"] in html)
     check("文档页无演示内容", "演示模式" not in html and "模拟支付" not in html)
 
@@ -502,6 +538,71 @@ def main():
     check("批量删除工单", r.get_json().get("affected") == 1, r.get_json())
 
     server.shutdown()
+
+    # ================= 邮件通知 =================
+    from unittest.mock import patch
+
+    from core.storage import db as _db
+    from shop.service import ShopService
+
+    mail_product = c.post("/api/admin/products", json={
+        "name": "邮件测试商品", "price": 0.01, "fulfill_mode": "stock", "status": 1,
+    }).get_json()["product"]
+    c.post(f"/api/admin/products/{mail_product['id']}/cards/import",
+           json={"text": "MAIL-1\nMAIL-2\nMAIL-3\nMAIL-4"})
+
+    def buy_mail_product(email_addr):
+        rr = c.post("/api/shop/order", json={
+            "token": token, "product_id": mail_product["id"], "qty": 1,
+            "contact": email_addr,
+        })
+        dd = rr.get_json()
+        if dd.get("code") == 1:
+            mark_paid(dd["trade_no"], detected_by="selftest")
+        return dd
+
+    # 邮件未启用时的订单状态
+    off = buy_mail_product("mail-off@example.com")
+    check("邮件测试订单1", off.get("code") == 1, off)
+    o_off = (ShopService().db.get_order_by_no(off.get("order_no"))
+             if off.get("order_no") else None)
+    check("未启用邮件状态", bool(o_off) and o_off.get("email_status") == 3, o_off)
+
+    # 保存邮件配置
+    r = c.post("/api/admin/email-config", json={
+        "enabled": True, "preset": "custom", "host": "smtp.test.local", "port": 465,
+        "security": "ssl", "username": "shop@test.local", "password": "smtp-secret",
+        "from_name": "测试商城", "from_email": "shop@test.local",
+    })
+    check("保存邮件配置", r.get_json().get("success"), r.get_json())
+    ecfg = c.get("/api/admin/email-config").get_json().get("config") or {}
+    check("邮件配置回读", ecfg.get("enabled") is True
+          and ecfg.get("password") == "smtp-secret", ecfg.get("password"))
+    raw_email = _db.settings_get("email_config") or {}
+    check("邮件密码加密存储", str(raw_email.get("password", "")).startswith("ENC2:"))
+
+    # 发货邮件（mock SMTP）
+    with patch("smtplib.SMTP_SSL") as mock_ssl:
+        inst = mock_ssl.return_value
+        on = buy_mail_product("mail-on@example.com")
+        check("邮件测试订单2", on.get("code") == 1, on)
+        o_on = (ShopService().db.get_order_by_no(on.get("order_no"))
+                if on.get("order_no") else None)
+        check("发货邮件已发送", bool(o_on) and o_on.get("email_status") == 1
+              and bool(o_on.get("email_sent_at")), o_on)
+        check("SMTP 已登录", inst.login.called)
+        msg = inst.send_message.call_args[0][0] if inst.send_message.called else None
+        check("邮件收件人正确", msg is not None and msg.get("To") == "mail-on@example.com")
+        check("SMTP 主机正确", mock_ssl.call_args[0][0] == "smtp.test.local")
+
+    # 测试邮件接口
+    with patch("smtplib.SMTP_SSL") as mock_ssl2:
+        r = c.post("/api/admin/email-test", json={"to": "test@example.com"})
+        check("测试邮件接口", r.get_json().get("success")
+              and mock_ssl2.return_value.send_message.called, r.get_json())
+
+    # 关闭邮件，避免后续测试触发真实连接
+    c.post("/api/admin/email-config", json={"enabled": False})
 
     # ---------- 页面渲染 ----------
     for path, needle in [("/", "自动生成商品"), ("/shop", "自动生成商品"),

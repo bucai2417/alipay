@@ -144,6 +144,7 @@ def main():
         # ---------- 前台下单 ----------
         page.goto(f"{BASE}/shop/p/{product['id']}", wait_until="networkidle")
         page.wait_for_selector("#contact")
+        assert page.locator("#contact[type=email]").count() == 1, "下单缺少邮箱输入"
         page.fill("#contact", CONTACT)
         page.click("#buyBtn")
         page.wait_for_url("**/pay/**", timeout=15000)
@@ -235,6 +236,17 @@ def main():
 
         page.goto(BASE + "/admin/feedback", wait_until="networkidle")
         assert page.locator("text=批量关闭").count() >= 1, "工单缺少批量关闭"
+
+        page.goto(BASE + "/admin/settings", wait_until="networkidle")
+        assert page.locator("#email_enabled").count() == 1, "设置页缺少邮件开关"
+        assert page.locator("#email_preset").count() == 1, "设置页缺少邮箱服务商"
+        assert page.locator("#testEmailBtn").count() == 1, "设置页缺少测试邮件按钮"
+
+        page.goto(BASE + "/admin/products", wait_until="networkidle")
+        page.click("#newProductBtn")
+        assert page.locator("#p_desc_editor").count() == 1, "商品编辑缺少富文本描述"
+        assert page.locator("#p_icon_btn").count() == 1, "商品编辑缺少图标上传"
+        page.locator("#productModal .actions .btn").first.click()
 
         # ---------- 后台各页面 ----------
         for path in ["/admin/pay-config", "/admin/products", "/admin/shop-orders",

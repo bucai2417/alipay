@@ -36,6 +36,41 @@
     </ul>
   </div>
 </div>
+
+<div class="card panel mt16">
+  <div class="spread">
+    <h2 style="margin:0;">邮件通知（SMTP）</h2>
+    <span class="small muted">发货后向买家邮箱发送订单与卡密</span>
+  </div>
+  <div id="emailHint" class="hint-box" style="display:none;margin-top:12px;"></div>
+  <label class="switch" style="margin:14px 0;">
+    <input type="checkbox" id="email_enabled"><span>启用邮件通知</span>
+  </label>
+  <div class="grid-3">
+    <label class="field"><span>邮箱服务商</span><select id="email_preset"></select></label>
+    <label class="field"><span>SMTP 主机</span><input id="email_host" placeholder="smtp.qq.com"></label>
+    <label class="field"><span>端口</span><input id="email_port" type="number" value="465"></label>
+    <label class="field"><span>加密方式</span>
+      <select id="email_security">
+        <option value="ssl">SSL</option>
+        <option value="starttls">STARTTLS</option>
+        <option value="none">不加密</option>
+      </select>
+    </label>
+    <label class="field"><span>发件邮箱（账号）</span><input id="email_username" placeholder="you@qq.com"></label>
+    <label class="field"><span>授权码 / 密码</span><input id="email_password" type="password" placeholder="留空保持不变"></label>
+  </div>
+  <div class="grid-2">
+    <label class="field"><span>发件人名称</span><input id="email_from_name" value="卡密商城"></label>
+    <label class="field"><span>发件邮箱（默认同账号）</span><input id="email_from_email"></label>
+  </div>
+  <p class="small muted" id="emailNote"></p>
+  <div class="row mt8">
+    <button class="btn primary" id="saveEmailBtn">保存邮件配置</button>
+    <input id="email_test_to" type="email" placeholder="测试收件邮箱" style="max-width:240px;">
+    <button class="btn" id="testEmailBtn">发送测试邮件</button>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -87,5 +122,99 @@ async function savePassword() {
 document.getElementById('saveShopBtn').addEventListener('click', saveShop);
 document.getElementById('savePwdBtn').addEventListener('click', savePassword);
 loadSettings().catch(e => toast(e.message, 'error'));
+
+/* ---------- 邮件通知 ---------- */
+const EMAIL_PRESET_NAMES = {
+  qq: 'QQ 邮箱', '163': '163 邮箱', '126': '126 邮箱', aliyun: '阿里云邮箱',
+  exmail: '腾讯企业邮', gmail: 'Gmail', outlook: 'Outlook', custom: '自定义 SMTP',
+};
+let emailPresets = {};
+
+function updateEmailNote() {
+  const key = document.getElementById('email_preset').value;
+  const p = emailPresets[key];
+  document.getElementById('emailNote').textContent = (p && p.note) ? p.note : '';
+}
+
+function updateEmailHint(cfg) {
+  const hint = document.getElementById('emailHint');
+  hint.style.display = 'block';
+  hint.className = 'hint-box';
+  if (cfg && cfg.enabled) {
+    hint.textContent = `邮件通知已启用：${cfg.username || '未填写账号'} → 发货后自动发送订单与卡密。`;
+  } else {
+    hint.textContent = '邮件通知未启用：买家仍需填写邮箱，但不会收到邮件。';
+  }
+}
+
+async function loadEmailConfig() {
+  const r = await api('/api/admin/email-config');
+  emailPresets = r.presets || {};
+  const cfg = r.config || {};
+  const sel = document.getElementById('email_preset');
+  sel.innerHTML = Object.keys(emailPresets).map(k =>
+    `<option value="${k}">${EMAIL_PRESET_NAMES[k] || k}</option>`).join('');
+  sel.value = cfg.preset || 'qq';
+  document.getElementById('email_enabled').checked = !!cfg.enabled;
+  document.getElementById('email_host').value = cfg.host || '';
+  document.getElementById('email_port').value = cfg.port || 465;
+  document.getElementById('email_security').value = cfg.security || 'ssl';
+  document.getElementById('email_username').value = cfg.username || '';
+  document.getElementById('email_password').value = cfg.password || '';
+  document.getElementById('email_from_name').value = cfg.from_name || '卡密商城';
+  document.getElementById('email_from_email').value = cfg.from_email || '';
+  updateEmailNote();
+  updateEmailHint(cfg);
+}
+
+document.getElementById('email_preset').addEventListener('change', () => {
+  const key = document.getElementById('email_preset').value;
+  const p = emailPresets[key] || {};
+  if (p.host) document.getElementById('email_host').value = p.host;
+  if (p.port) document.getElementById('email_port').value = p.port;
+  if (p.security) document.getElementById('email_security').value = p.security;
+  updateEmailNote();
+});
+
+async function saveEmailConfig() {
+  try {
+    const r = await api('/api/admin/email-config', {
+      method: 'POST',
+      body: {
+        enabled: document.getElementById('email_enabled').checked,
+        preset: document.getElementById('email_preset').value,
+        host: document.getElementById('email_host').value.trim(),
+        port: parseInt(document.getElementById('email_port').value || '465', 10),
+        security: document.getElementById('email_security').value,
+        username: document.getElementById('email_username').value.trim(),
+        password: document.getElementById('email_password').value,
+        from_name: document.getElementById('email_from_name').value.trim(),
+        from_email: document.getElementById('email_from_email').value.trim(),
+      },
+    });
+    toast('邮件配置已保存', 'success');
+    updateEmailHint(r.config || {});
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function testEmail() {
+  const to = document.getElementById('email_test_to').value.trim();
+  if (!to) { toast('请填写测试收件邮箱', 'error'); return; }
+  const btn = document.getElementById('testEmailBtn');
+  btn.disabled = true;
+  btn.textContent = '发送中...';
+  try {
+    const r = await api('/api/admin/email-test', { method: 'POST', body: { to } });
+    toast(r.message || '测试邮件已发送', 'success');
+  } catch (e) { toast(e.message, 'error'); }
+  finally {
+    btn.disabled = false;
+    btn.textContent = '发送测试邮件';
+  }
+}
+
+document.getElementById('saveEmailBtn').addEventListener('click', saveEmailConfig);
+document.getElementById('testEmailBtn').addEventListener('click', testEmail);
+loadEmailConfig().catch(e => toast(e.message, 'error'));
 </script>
 {% endblock %}

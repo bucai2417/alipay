@@ -6,8 +6,15 @@
     <div class="head">
       <div style="flex:1;min-width:240px;">
         <a href="/" class="small muted">← 返回商城</a>
-        <h1 style="font-size:26px;margin-top:8px;">{{ product.name }}</h1>
-        <div class="desc">{{ product.description or '暂无商品描述' }}</div>
+        <div class="product-title-row">
+          {% if product.icon_path %}
+            <img class="product-hero-icon" src="{{ product.icon_path }}" alt="{{ product.name }}">
+          {% endif %}
+          <h1 style="font-size:26px;">{{ product.name }}</h1>
+        </div>
+        <div class="desc rich-content">
+          {% if product.description %}{{ product.description|safe }}{% else %}暂无商品描述{% endif %}
+        </div>
         <div class="row mt16 small muted">
           <span>已售 {{ product.sold_count }}</span>
           {% if product.fulfill_mode == 'stock' %}<span>库存 {{ product.stock_count }}</span>{% endif %}
@@ -33,8 +40,8 @@
           </div>
         </label>
         <label class="field">
-          <span>备注（邮箱 / QQ / 手机号，用于查询订单）</span>
-          <input id="contact" type="text" maxlength="200" placeholder="例如：qq123456 或 mail@example.com">
+          <span>邮箱（必填，用于接收订单与卡密）</span>
+          <input id="contact" type="email" maxlength="200" placeholder="you@example.com">
         </label>
         <button class="btn primary" id="buyBtn" style="width:100%;padding:12px;font-size:15px;">立即购买</button>
         <p class="small muted mt8">下单后将跳转到支付页面，支付成功后本页订单可凭备注查询卡密。</p>
@@ -44,8 +51,8 @@
         <ul class="tips">
           <li>下单后请在支付页面按提示完成付款</li>
           <li>系统自动核验到账，无需人工确认</li>
-          <li>发货后卡密会显示在支付结果与订单查询中</li>
-          <li>如遇问题可凭备注联系在线客服</li>
+          <li>发货后卡密会显示在支付结果、订单查询，并发送到你的邮箱</li>
+          <li>邮箱同时用于订单查询与联系客服，请填写真实地址</li>
         </ul>
       </div>
     </div>
@@ -70,7 +77,8 @@ async function buy() {
   const btn = document.getElementById('buyBtn');
   const qty = parseInt(document.getElementById('qty').value || '1', 10);
   const contact = document.getElementById('contact').value.trim();
-  if (!contact) { alert('请填写备注，用于查询订单'); return; }
+  const emailRe = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+  if (!emailRe.test(contact)) { alert('请填写有效的邮箱地址'); return; }
   btn.disabled = true; btn.textContent = '正在创建订单...';
   try {
     const resp = await fetch('/api/shop/order', {

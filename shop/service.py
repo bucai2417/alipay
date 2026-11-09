@@ -10,8 +10,14 @@ import secrets
 import time
 from datetime import datetime
 
+from core import mailer
 from core.logger import get_logger
-from core.settings import load_alipay_config, load_shop_settings, payment_readiness
+from core.settings import (
+    load_alipay_config,
+    load_email_config,
+    load_shop_settings,
+    payment_readiness,
+)
 
 from .db import ShopDB
 from .generator import generate_codes
@@ -101,8 +107,8 @@ class ShopService:
             return {"code": -1, "msg": f"购买数量需在 1-{max_qty} 之间"}
 
         contact = str(contact or "").strip()
-        if source == "web" and not contact:
-            return {"code": -1, "msg": "请填写备注（邮箱/QQ/手机号），用于查询订单"}
+        if source == "web" and not mailer.is_email(contact):
+            return {"code": -1, "msg": "请填写有效的邮箱地址（用于接收订单与卡密）"}
         if len(contact) > 200:
             return {"code": -1, "msg": "备注过长，最多 200 字"}
 
@@ -263,7 +269,23 @@ class ShopService:
         )
         if notify:
             self._notify_admin(order, payload)
+            self._send_buyer_email(order, payload)
         return {"code": 1, "msg": "SUCCESS", "order": self.public_order_view(order)}
+
+    def _send_buyer_email(self, order, payload):
+        """发货后向买家邮箱发送订单与卡密（未启用时记录状态）。"""
+        email_addr = str(order.get("contact") or "").strip()
+        if not mailer.is_email(email_addr):
+            self.db.update_email_status(order["id"], 4)
+            return
+        cfg = load_email_config()
+        if not cfg.get("enabled"):
+            self.db.update_email_status(order["id"], 3)
+            return
+        title = self.settings().get("shop_title") or "卡密商城"
+        subject, html_body, text_body = mailer.order_email_content(title, order, payload)
+        ok, error = mailer.send_email(cfg, email_addr, subject, html_body, text_body)
+        self.db.update_email_status(order["id"], 1 if ok else 2, "" if ok else error)
 
     def _notify_admin(self, order, payload):
         settings = self.settings()

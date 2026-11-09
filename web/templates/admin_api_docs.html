@@ -12,6 +12,7 @@
   <aside class="card docs-nav">
     <h3>文档目录</h3>
     <a href="#overview">接入概览</a>
+    <a href="#integration">对接配置清单</a>
     <a href="#auth">签名与认证</a>
     <div class="sep"></div>
     <a href="#api-query">查询商户 query</a>
@@ -86,6 +87,45 @@
             同时兼容旧系统常用的 <span class="inline-code">/submit.php</span> 与 <span class="inline-code">/api.php</span> 路径。</p>
         </div>
       </div>
+    </section>
+
+    <!-- 对接配置清单 -->
+    <section class="card doc-card" id="integration">
+      <h2>对接配置清单</h2>
+      <p>本项目与彩虹易支付等主流码支付网关的接入方式一致。开始对接前，请按下表完成双方配置。</p>
+
+      <div class="grid-2 mt16">
+        <div>
+          <h3>本系统（收款端）</h3>
+          <ul>
+            <li>「支付配置」填写 AppId、应用私钥、支付宝公钥；</li>
+            <li>转账链接模式填写收款账号 userId；经营码模式上传收款二维码；</li>
+            <li>点击「自动生成商户凭据」并保存 pid / key，提供给对接方；</li>
+            <li>支付宝开放平台开通「账户账单查询」权限，保持监控运行；</li>
+            <li>服务器出网正常（用于查询支付宝账单与发送回调）。</li>
+          </ul>
+        </div>
+        <div>
+          <h3>对接方（商户站点）</h3>
+          <ul>
+            <li>配置本系统接入地址（Base URL）；</li>
+            <li>配置本系统生成的商户 ID（pid）与商户密钥（key）；</li>
+            <li>提供公网可达的 <span class="inline-code">notify_url</span>（POST 表单，返回 <span class="inline-code">success</span>）；</li>
+            <li><span class="inline-code">return_url</span> 可选，用于支付完成后跳转；</li>
+            <li>按签名规则生成 <span class="inline-code">sign</span>，创建支付时传 <span class="inline-code">type=alipay</span>、订单号、名称、金额。</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>上线检查</h3>
+      <ul>
+        <li>后台「概览」显示支付配置为「可下单」；「健康检查」payment_ready 为 true。</li>
+        <li>用「在线调试」创建一笔最小金额订单，确认二维码/支付页正常。</li>
+        <li>完成一笔真实小额支付，确认订单自动变为已支付，且对接方收到回调。</li>
+        <li>回调返回非 success 时，后台订单列表会显示「待重试」，并按 1/5/15/30/60 分钟重试。</li>
+        <li>回调参数、签名规则与常见码支付平台一致（trade_status=TRADE_SUCCESS，sign_type=MD5）。</li>
+      </ul>
+      <p class="small muted mt8">快捷检查：<span class="inline-code">GET /health</span>；兼容路径：<span class="inline-code">/submit.php</span>、<span class="inline-code">/api.php</span>。</p>
     </section>
 
     <!-- 签名 -->

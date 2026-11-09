@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import html
 import os
+import re
 import secrets
 from datetime import timedelta
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import (Flask, Response, jsonify, render_template, request,
+                   send_from_directory)
 
 from config import DATA_DIR, SECRET_KEY
 
@@ -64,6 +67,17 @@ def create_app() -> Flask:
             b" font-weight='bold' text-anchor='middle' fill='white'>K</text></svg>"
         )
         return Response(svg, mimetype="image/svg+xml")
+
+    @app.route("/uploads/<path:filename>")
+    def uploaded_file(filename):
+        if os.path.basename(filename) != filename:
+            return "", 404
+        return send_from_directory(os.path.join(DATA_DIR, "uploads"), filename)
+
+    @app.template_filter("strip_html")
+    def strip_html(value):
+        text = re.sub(r"<[^>]+>", " ", str(value or ""))
+        return re.sub(r"\s+", " ", html.unescape(text)).strip()
 
     from web import api_admin, api_codepay, api_shop, auth
 
