@@ -1,0 +1,140 @@
+{% extends "admin_base.html" %}
+{% block title %}商城订单 - 管理后台{% endblock %}
+{% block heading %}商城订单{% endblock %}
+{% block subheading %}下单、支付与自动发货记录{% endblock %}
+{% block head_actions %}
+  <button class="btn" id="exportBtn">导出 CSV</button>
+  <button class="btn primary" id="refreshBtn">刷新</button>
+{% endblock %}
+
+{% block content %}
+<div class="card panel">
+  <div class="toolbar">
+    <select id="statusFilter">
+      <option value="">全部状态</option>
+      <option value="pending">待支付</option>
+      <option value="paid">已支付</option>
+      <option value="fulfilled">已发货</option>
+      <option value="expired">已过期</option>
+      <option value="failed">发货失败</option>
+    </select>
+    <input id="searchInput" type="text" placeholder="订单号 / 商品 / 备注">
+    <button class="btn" id="searchBtn">搜索</button>
+    <span class="small muted" id="totalText"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>订单号</th><th>商品</th><th>数量</th><th>金额</th>
+        <th>备注</th><th>支付单号</th><th>状态</th><th>时间</th><th style="width:190px;">操作</th>
+      </tr></thead>
+      <tbody id="shopRows"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <button class="btn sm" id="prevBtn">上一页</button>
+    <span id="pageText"></span>
+    <button class="btn sm" id="nextBtn">下一页</button>
+  </div>
+</div>
+
+<div class="modal-mask" id="cardsModal">
+  <div class="modal">
+    <h3 id="cardsTitle">发货内容</h3>
+    <div class="cards-box"><pre id="cardsText"></pre></div>
+    <div class="actions"><button class="btn" onclick="closeModal()">关闭</button></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let page = 1;
+const pageSize = 20;
+let total = 0;
+
+function closeModal() { document.getElementById('cardsModal').classList.remove('show'); }
+
+function viewCards(orderNo, title) {
+  const item = window.__orders.find(o => o.order_no === orderNo);
+  document.getElementById('cardsTitle').textContent = '发货内容 · ' + title;
+  document.getElementById('cardsText').textContent = (item && item.card_payload) || '暂无发货内容';
+  document.getElementById('cardsModal').classList.add('show');
+}
+
+async function load() {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  const status = document.getElementById('statusFilter').value;
+  const search = document.getElementById('searchInput').value.trim();
+  if (status) params.set('status', status);
+  if (search) params.set('search', search);
+  try {
+    const data = await api('/api/admin/shop-orders?' + params.toString());
+    total = data.total || 0;
+    window.__orders = data.orders || [];
+    document.getElementById('totalText').textContent = `共 ${total} 笔`;
+    if (!window.__orders.length) {
+      document.getElementById('shopRows').innerHTML = '<tr><td colspan="9" class="empty">暂无订单</td></tr>';
+    } else {
+      document.getElementById('shopRows').innerHTML = window.__orders.map(o => `
+        <tr>
+          <td class="mono small">${esc(o.order_no)}</td>
+          <td>${esc(o.product_name_snapshot)}</td>
+          <td>${o.qty}</td>
+          <td>¥${fmtMoney(o.price * o.qty)}</td>
+          <td class="small">${esc(o.contact || '-')}</td>
+          <td class="mono small">${esc(o.payment_out_trade_no)}</td>
+          <td><span class="badge ${SHOP_STATUS_CLASS[o.status] || ''}">${SHOP_STATUS_TEXT[o.status] || esc(o.status)}</span></td>
+          <td class="small">${esc(o.created_at)}${o.paid_at ? '<br>' + esc(o.paid_at) : ''}</td>
+          <td>
+            ${o.status === 'pending' || o.status === 'failed' ? `<button class="btn sm success" onclick="markPaid('${esc(o.order_no)}')">标记支付</button>` : ''}
+            ${o.status === 'paid' || o.status === 'failed' ? `<button class="btn sm" onclick="refulfill('${esc(o.order_no)}')">补发</button>` : ''}
+            ${o.card_payload ? `<button class="btn sm" onclick="viewCards('${esc(o.order_no)}', '${esc(o.product_name_snapshot)}')">卡密</button>` : ''}
+          </td>
+        </tr>`).join('');
+    }
+    const maxPage = Math.max(1, Math.ceil(total / pageSize));
+    document.getElementById('pageText').textContent = `${page} / ${maxPage}`;
+    document.getElementById('prevBtn').disabled = page <= 1;
+    document.getElementById('nextBtn').disabled = page >= maxPage;
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function refulfill(orderNo) {
+  try {
+    await api(`/api/admin/shop-orders/${encodeURIComponent(orderNo)}/refulfill`, { method: 'POST' });
+    toast('补发成功', 'success');
+    load();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function markPaid(orderNo) {
+  if (!confirm('确认该订单已线下收款/外部支付？将立即标记支付并发货。')) return;
+  try {
+    await api(`/api/admin/shop-orders/${encodeURIComponent(orderNo)}/mark-paid`, { method: 'POST' });
+    toast('已标记支付并发货', 'success');
+    load();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', load);
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const params = new URLSearchParams();
+  const status = document.getElementById('statusFilter').value;
+  const search = document.getElementById('searchInput').value.trim();
+  if (status) params.set('status', status);
+  if (search) params.set('search', search);
+  location.href = '/api/admin/shop-orders/export?' + params.toString();
+});
+document.getElementById('searchBtn').addEventListener('click', () => { page = 1; load(); });
+document.getElementById('statusFilter').addEventListener('change', () => { page = 1; load(); });
+document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') { page = 1; load(); } });
+document.getElementById('prevBtn').addEventListener('click', () => { if (page > 1) { page--; load(); } });
+document.getElementById('nextBtn').addEventListener('click', () => { page++; load(); });
+document.getElementById('cardsModal').addEventListener('click', e => {
+  if (e.target.id === 'cardsModal') closeModal();
+});
+
+load();
+</script>
+{% endblock %}

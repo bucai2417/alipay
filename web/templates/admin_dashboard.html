@@ -1,0 +1,136 @@
+{% extends "admin_base.html" %}
+{% block title %}概览 - 管理后台{% endblock %}
+{% block heading %}概览{% endblock %}
+{% block subheading %}支付、商城与监控运行状态{% endblock %}
+{% block head_actions %}
+  <button class="btn" id="runMonitorBtn">立即检查支付</button>
+  <button class="btn" id="refreshBtn">刷新</button>
+{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+  <div class="card stat"><div class="label">累计入账金额</div><div class="value" id="revenue">0.00</div><div class="hint">已支付码支付订单累计</div></div>
+  <div class="card stat"><div class="label">码支付订单</div><div class="value" id="payTotal">0</div><div class="hint">待支付 <span id="payPending">0</span> · 已支付 <span id="payPaid">0</span></div></div>
+  <div class="card stat"><div class="label">商城订单</div><div class="value" id="shopTotal">0</div><div class="hint">已发货 <span id="shopFulfilled">0</span> · 待支付 <span id="shopPending">0</span></div></div>
+  <div class="card stat"><div class="label">客服未读</div><div class="value" id="fbUnread">0</div><div class="hint">工单总数 <span id="fbTotal">0</span></div></div>
+</div>
+
+<div class="card panel mt24">
+  <div class="spread" style="margin-bottom:10px;">
+    <h2 style="margin:0;">近 7 天收入趋势</h2>
+    <span class="small muted" id="trendSummary">加载中...</span>
+  </div>
+  <div class="trend-chart" id="trendChart"></div>
+</div>
+
+<div class="grid-2 mt24">
+  <div class="card panel">
+    <h2>运行状态</h2>
+    <table>
+      <tbody>
+        <tr><td style="white-space:nowrap;">支付配置</td><td id="cfgState">-</td></tr>
+        <tr><td style="white-space:nowrap;">监控线程</td><td id="monitorState">-</td></tr>
+        <tr><td style="white-space:nowrap;">最近检查时间</td><td id="monitorLast">-</td></tr>
+        <tr><td style="white-space:nowrap;">最近检查结果</td><td id="monitorResult">-</td></tr>
+        <tr><td style="white-space:nowrap;">数据库</td><td id="dbState" class="mono small">-</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card panel">
+    <h2>依赖与密钥检查</h2>
+    <div id="healthBox" class="small muted">加载中...</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  try {
+    const s = await api('/api/admin/stats');
+    document.getElementById('revenue').textContent = fmtMoney(s.pay.total_revenue);
+    document.getElementById('payTotal').textContent = s.pay.total;
+    document.getElementById('payPending').textContent = s.pay.pending;
+    document.getElementById('payPaid').textContent = s.pay.paid;
+    document.getElementById('shopTotal').textContent = s.shop.total;
+    document.getElementById('shopFulfilled').textContent = s.shop.fulfilled;
+    document.getElementById('shopPending').textContent = s.shop.pending;
+    document.getElementById('fbUnread').textContent = s.feedback.unread_count;
+    document.getElementById('fbTotal').textContent = s.feedback.total;
+
+    const cfgState = document.getElementById('cfgState');
+    cfgState.innerHTML = s.payment_ready
+      ? '<span class="badge green">可下单</span>'
+      : '<span class="badge red">未就绪</span> <span class="small muted">'
+        + esc(s.payment_reason || '配置不完整') + '</span>';
+    const m = s.monitor || {};
+    document.getElementById('monitorState').innerHTML = m.running
+      ? '<span class="badge blue">运行中</span>'
+      : '<span class="badge green">空闲</span>';
+    document.getElementById('monitorLast').textContent = m.last_run || '尚未运行';
+    const r = m.last_result || {};
+    document.getElementById('monitorResult').textContent =
+      r.skipped ? ('跳过: ' + r.skipped) :
+      r.error ? ('错误: ' + r.error) :
+      ('账单 ' + (r.bills || 0) + ' 条，匹配 ' + (r.matched || 0) + ' 单');
+  } catch (e) { toast(e.message, 'error'); }
+
+  try {
+    const h = await api('/api/admin/health');
+    const rows = Object.entries(h.config).map(([k, v]) =>
+      `<div class="spread" style="padding:4px 0;"><span>${esc(k)}</span><span class="${String(v).includes('OK') ? 'badge green' : 'badge red'}">${esc(v)}</span></div>`).join('');
+    document.getElementById('healthBox').innerHTML =
+      `<div class="spread" style="padding:4px 0;"><span>支付可用</span>${h.payment_ready ? '<span class="badge green">是</span>' : '<span class="badge red">否</span>'}</div>` +
+      `<div class="spread" style="padding:4px 0;"><span>数据库</span><span class="badge ${h.database.status === 'OK' ? 'green' : 'red'}">${esc(h.database.status)}</span></div>` +
+      rows;
+    document.getElementById('dbState').textContent = h.db_path;
+  } catch (e) { /* 忽略 */ }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', load);
+document.getElementById('runMonitorBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('runMonitorBtn');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/admin/monitor/run', { method: 'POST' });
+    const res = r.result || {};
+    if (res.skipped) toast('已跳过：' + res.skipped);
+    else if (res.error) toast('检查失败：' + res.error, 'error');
+    else toast(`账单 ${res.bills || 0} 条，匹配 ${res.matched || 0} 单`, 'success');
+  } catch (e) { toast(e.message, 'error'); }
+  btn.disabled = false;
+  load();
+});
+
+async function loadTrend() {
+  try {
+    const data = await api('/api/admin/stats/trend?days=7');
+    const items = data.items || [];
+    const max = Math.max(0.01, ...items.map(i => i.total_amount));
+    document.getElementById('trendSummary').textContent =
+      `7 天合计 ¥${fmtMoney(data.total_amount)} · ${data.total_count} 笔`;
+    document.getElementById('trendChart').innerHTML = items.map(i => {
+      const h = i.total_amount > 0
+        ? Math.max(8, Math.round(i.total_amount / max * 132))
+        : 2;
+      const tip = `${i.date}｜支付 ¥${fmtMoney(i.pay_amount)}（${i.pay_count} 笔）`
+        + `｜商城 ¥${fmtMoney(i.shop_amount)}（${i.shop_count} 笔）`;
+      return `<div class="trend-col" title="${esc(tip)}">
+        <div class="trend-bar-wrap">
+          <div class="trend-bar ${i.total_amount > 0 ? '' : 'zero'}" style="height:${h}px;">
+            ${i.total_amount > 0 ? `<span class="trend-val">${fmtMoney(i.total_amount)}</span>` : ''}
+          </div>
+        </div>
+        <div class="trend-label">${i.date.slice(5)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('trendSummary').textContent = '趋势加载失败';
+  }
+}
+
+load();
+loadTrend();
+setInterval(() => { load(); loadTrend(); }, 20000);
+</script>
+{% endblock %}

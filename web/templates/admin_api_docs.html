@@ -1,0 +1,643 @@
+{% extends "admin_base.html" %}
+{% block title %}开发接口 - 管理后台{% endblock %}
+{% block heading %}开发接口{% endblock %}
+{% block subheading %}CodePay 协议对接文档、签名说明与在线调试{% endblock %}
+{% block head_actions %}
+  <button class="btn" onclick="regenMerchant()">重新生成商户凭据</button>
+  <a class="btn primary" href="#try">在线调试</a>
+{% endblock %}
+
+{% block content %}
+<div class="docs-layout">
+  <aside class="card docs-nav">
+    <h3>文档目录</h3>
+    <a href="#overview">接入概览</a>
+    <a href="#auth">签名与认证</a>
+    <div class="sep"></div>
+    <a href="#api-query">查询商户 query</a>
+    <a href="#api-order">查询订单 order</a>
+    <a href="#api-orders">批量订单 orders</a>
+    <a href="#api-submit">创建支付 submit</a>
+    <a href="#api-notify">支付通知 notify</a>
+    <a href="#api-health">健康检查</a>
+    <div class="sep"></div>
+    <a href="#quickstart">快速接入代码</a>
+    <a href="#callback">回调验签</a>
+    <a href="#builder">参数拼装</a>
+    <a href="#try">在线调试</a>
+  </aside>
+
+  <div class="docs-content">
+
+    <!-- 概览 -->
+    <section class="card doc-card" id="overview">
+      <h2>接入概览</h2>
+      <p>外部站点通过本系统的码支付网关创建支付订单，用户扫码付款后，系统自动查询支付宝账单并回调商户。协议与主流码支付网关兼容。</p>
+
+      <div class="grid-2 mt16">
+        <div>
+          <label class="field"><span>接入地址（Base URL）</span>
+            <div class="copy-inline">
+              <code id="baseUrlBox">{{ base_url }}</code>
+              <button class="copy-btn" data-copy="{{ base_url }}">复制</button>
+            </div>
+          </label>
+          <label class="field"><span>商户 ID（pid）</span>
+            <div class="copy-inline">
+              <code id="pidBox">{{ merchant_id or '未配置' }}</code>
+              {% if merchant_id %}<button class="copy-btn" data-copy="{{ merchant_id }}">复制</button>{% endif %}
+            </div>
+          </label>
+          <label class="field"><span>商户密钥（key）</span>
+            <div class="copy-inline">
+              <code id="keyBox">{{ merchant_key or '未配置' }}</code>
+              {% if merchant_key %}<button class="copy-btn" data-copy="{{ merchant_key }}">复制</button>{% endif %}
+            </div>
+          </label>
+        </div>
+        <div>
+          <div class="row" style="gap:8px;margin-bottom:10px;">
+            {% if payment_ready %}
+              <span class="badge green">收款已就绪</span>
+            {% else %}
+              <span class="badge red">收款未就绪</span>
+            {% endif %}
+            {% if merchant_ready %}
+              <span class="badge blue">商户凭据已配置</span>
+            {% else %}
+              <span class="badge red">商户凭据未配置</span>
+            {% endif %}
+            <span class="badge {{ 'purple' if business_qr_mode else '' }}">
+              {{ '经营码模式' if business_qr_mode else '转账链接模式' }}
+            </span>
+            <span class="badge">订单超时 {{ order_timeout }} 秒</span>
+          </div>
+          {% if not merchant_ready %}
+          <div class="hint-box">
+            还没有商户凭据：先到「支付配置」填写 AppId，点击「自动生成商户凭据」并保存，或点击右上角「重新生成商户凭据」。
+          </div>
+          {% elif not payment_ready %}
+          <div class="hint-box">
+            收款未就绪：{{ payment_reason }}。请先到「支付配置」完成后再对接。
+          </div>
+          {% endif %}
+          <p class="small muted mt8">所有接口均为 <span class="mono">POST</span> 或 <span class="mono">GET</span> 到
+            <span class="inline-code">/api/codepay</span>，通过 <span class="inline-code">act</span> 参数区分操作。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 签名 -->
+    <section class="card doc-card" id="auth">
+      <h2>签名与认证</h2>
+      <p>除 <span class="inline-code">query</span> 类查询外，创建支付与支付通知都需要 MD5 签名：</p>
+      <ul>
+        <li>收集本次请求的全部业务参数；</li>
+        <li>过滤空值，并按参数名 ASCII 升序排序；</li>
+        <li>拼接为 <span class="inline-code">k1=v1&k2=v2</span>；</li>
+        <li>末尾拼接商户密钥，取 MD5 小写，作为 <span class="inline-code">sign</span>；</li>
+        <li><span class="inline-code">sign / sign_type / act / action / format</span> 不参与签名。</li>
+      </ul>
+
+      <pre class="code-block" style="margin-top:14px;"><code id="signPy">import hashlib
+
+def generate_sign(params: dict, merchant_key: str) -> str:
+    ignored = {"sign", "sign_type", "act", "action", "format"}
+    filtered = {k: v for k, v in params.items()
+                if k not in ignored and v is not None and str(v) != ""}
+    raw = "&".join(f"{k}={filtered[k]}" for k in sorted(filtered))
+    return hashlib.md5((raw + merchant_key).encode("utf-8")).hexdigest()</code><button class="copy-code" data-target="signPy">复制</button></pre>
+
+      <h3>响应约定</h3>
+      <p>成功返回 <span class="inline-code">{"code": 1, "msg": "SUCCESS"}</span>；失败返回
+        <span class="inline-code">{"code": -1, "msg": "原因"}</span>。创建支付成功时额外返回
+        <span class="inline-code">trade_no</span>（平台订单号）、<span class="inline-code">payment_amount</span>（实际需支付金额）与
+        <span class="inline-code">qr_code</span>（二维码 base64）。</p>
+    </section>
+
+    <!-- query -->
+    <section class="card doc-card" id="api-query">
+      <h2><span class="method post">POST</span> 查询商户</h2>
+      <div class="endpoint"><span class="method">act=query</span><span class="path">/api/codepay</span></div>
+      <table class="param-table">
+        <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>act</code></td><td>string</td><td class="required">是</td><td>固定 <code>query</code></td></tr>
+          <tr><td><code>pid</code></td><td>string</td><td class="required">是</td><td>商户 ID</td></tr>
+          <tr><td><code>key</code></td><td>string</td><td class="required">是</td><td>商户密钥</td></tr>
+        </tbody>
+      </table>
+      <pre class="code-block"><code id="curlQuery">curl -X POST '{{ base_url }}/api/codepay' \
+  -d 'act=query' \
+  -d 'pid={{ merchant_id or '你的商户ID' }}' \
+  -d 'key={{ merchant_key or '你的商户密钥' }}'</code><button class="copy-code" data-target="curlQuery">复制</button></pre>
+    </section>
+
+    <!-- order -->
+    <section class="card doc-card" id="api-order">
+      <h2><span class="method post">POST</span> 查询订单</h2>
+      <div class="endpoint"><span class="method">act=order</span><span class="path">/api/codepay</span></div>
+      <table class="param-table">
+        <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>act</code></td><td>string</td><td class="required">是</td><td>固定 <code>order</code></td></tr>
+          <tr><td><code>pid</code></td><td>string</td><td class="required">是</td><td>商户 ID</td></tr>
+          <tr><td><code>out_trade_no</code></td><td>string</td><td class="required">是</td><td>商户订单号</td></tr>
+          <tr><td><code>key</code></td><td>string</td><td class="optional">否</td><td>传 key 时校验商户身份；不传可用于前端轮询</td></tr>
+        </tbody>
+      </table>
+      <p class="small muted">返回 <span class="inline-code">status</span>：0 待支付 / 1 已支付 / 2 已过期（该接口查询时会顺带触发一次账单检查）。</p>
+      <pre class="code-block"><code id="curlOrder">curl -X POST '{{ base_url }}/api/codepay' \
+  -d 'act=order' \
+  -d 'pid={{ merchant_id or '你的商户ID' }}' \
+  -d 'key={{ merchant_key or '你的商户密钥' }}' \
+  -d 'out_trade_no=ORDER20260101001'</code><button class="copy-code" data-target="curlOrder">复制</button></pre>
+    </section>
+
+    <!-- orders -->
+    <section class="card doc-card" id="api-orders">
+      <h2><span class="method post">POST</span> 批量查询订单</h2>
+      <div class="endpoint"><span class="method">act=orders</span><span class="path">/api/codepay</span></div>
+      <table class="param-table">
+        <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>act</code></td><td>string</td><td class="required">是</td><td>固定 <code>orders</code></td></tr>
+          <tr><td><code>pid</code> / <code>key</code></td><td>string</td><td class="required">是</td><td>商户凭据</td></tr>
+          <tr><td><code>limit</code></td><td>int</td><td class="optional">否</td><td>返回条数，默认 20，最大 100</td></tr>
+        </tbody>
+      </table>
+      <p class="small muted">返回订单数组，字段与 <span class="inline-code">order</span> 接口一致。</p>
+    </section>
+
+    <!-- submit -->
+    <section class="card doc-card" id="api-submit">
+      <h2><span class="method post">POST</span> 创建支付</h2>
+      <div class="endpoint"><span class="method">act=submit</span><span class="path">/api/codepay</span></div>
+      <table class="param-table">
+        <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>act</code></td><td>string</td><td class="required">是</td><td><code>submit</code> 或 <code>create</code></td></tr>
+          <tr><td><code>pid</code></td><td>string</td><td class="required">是</td><td>商户 ID</td></tr>
+          <tr><td><code>type</code></td><td>string</td><td class="required">是</td><td>固定 <code>alipay</code></td></tr>
+          <tr><td><code>out_trade_no</code></td><td>string</td><td class="required">是</td><td>商户订单号（唯一）</td></tr>
+          <tr><td><code>name</code></td><td>string</td><td class="required">是</td><td>商品名称</td></tr>
+          <tr><td><code>money</code></td><td>string</td><td class="required">是</td><td>金额，最多两位小数</td></tr>
+          <tr><td><code>sign</code></td><td>string</td><td class="required">是</td><td>MD5 签名（见上）</td></tr>
+          <tr><td><code>notify_url</code></td><td>string</td><td class="optional">否</td><td>支付成功回调地址，GET/POST 均可</td></tr>
+          <tr><td><code>return_url</code></td><td>string</td><td class="optional">否</td><td>支付完成跳转地址</td></tr>
+          <tr><td><code>sitename</code></td><td>string</td><td class="optional">否</td><td>站点名称</td></tr>
+          <tr><td><code>format</code></td><td>string</td><td class="optional">否</td><td><code>json</code> 返回 JSON；默认重定向到支付页</td></tr>
+        </tbody>
+      </table>
+      <h3>请求示例</h3>
+      <div class="tabs">
+        <button class="tab active" data-target="codeExample" data-view="form">字符格式</button>
+        <button class="tab" data-target="codeExample" data-view="json">JSON 格式</button>
+      </div>
+      <pre class="code-block" id="submitFormExample"><code>act=submit&pid={{ merchant_id or '你的商户ID' }}&type=alipay&out_trade_no=ORDER20260101001&name=测试商品&money=1.00&notify_url=https://your-site.com/pay/notify&sign=按签名规则计算</code><button class="copy-code" data-target="submitFormExample">复制</button></pre>
+      <pre class="code-block" id="submitJsonExample" style="display:none;"><code>{
+  "act": "submit",
+  "pid": "{{ merchant_id or '你的商户ID' }}",
+  "type": "alipay",
+  "out_trade_no": "ORDER20260101001",
+  "name": "测试商品",
+  "money": "1.00",
+  "notify_url": "https://your-site.com/pay/notify",
+  "sign": "按签名规则计算"
+}</code><button class="copy-code" data-target="submitJsonExample">复制</button></pre>
+      <p class="small muted">需要真实签名？使用下方「参数拼装 / 签名生成」，自动补全 pid 与 sign 并生成两种格式。</p>
+
+      <h3>响应示例</h3>
+      <pre class="code-block"><code>{
+  "code": 1,
+  "msg": "SUCCESS",
+  "trade_no": "20260101120000123456",
+  "out_trade_no": "ORDER20260101001",
+  "money": "1.00",
+  "payment_amount": "1.00",
+  "payment_url": "https://render.alipay.com/...",
+  "qr_code": "iVBORw0KGgo...",
+  "business_qr_mode": false
+}</code></pre>
+      <p class="small muted mt8">HTTP 表单提交（不带 <span class="inline-code">format=json</span>）成功时 302 跳转到
+        <span class="inline-code">/pay/&lt;trade_no&gt;</span> 支付页；API 调用请传 <span class="inline-code">format=json</span>。</p>
+    </section>
+
+    <!-- notify -->
+    <section class="card doc-card" id="api-notify">
+      <h2><span class="method post">POST</span> 支付通知</h2>
+      <p>用户支付成功后，系统向商户的 <span class="inline-code">notify_url</span> 发送通知。商户需校验 <code>sign</code>，返回纯文本 <span class="inline-code">success</span> 表示已收到。</p>
+      <table class="param-table">
+        <thead><tr><th>字段</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>pid</code></td><td>商户 ID</td></tr>
+          <tr><td><code>trade_no</code></td><td>平台订单号</td></tr>
+          <tr><td><code>out_trade_no</code></td><td>商户订单号</td></tr>
+          <tr><td><code>type</code></td><td>支付类型（alipay）</td></tr>
+          <tr><td><code>name</code></td><td>商品名称</td></tr>
+          <tr><td><code>money</code></td><td>订单金额</td></tr>
+          <tr><td><code>trade_status</code></td><td>固定 <code>TRADE_SUCCESS</code></td></tr>
+          <tr><td><code>sign / sign_type</code></td><td>MD5 签名，sign_type=MD5</td></tr>
+        </tbody>
+      </table>
+      <p class="small muted mt8">回调使用与请求相同的签名规则；同一订单可能重复通知，请务必幂等处理。</p>
+    </section>
+
+    <!-- health -->
+    <section class="card doc-card" id="api-health">
+      <h2><span class="method get">GET</span> 健康检查</h2>
+      <div class="endpoint"><span class="method get">GET</span><span class="path">/health</span></div>
+      <p>返回依赖、配置、数据库与收款就绪状态，可用于监控探测。</p>
+    </section>
+
+    <!-- 快速接入 -->
+    <section class="card doc-card" id="quickstart">
+      <h2>快速接入（Python）</h2>
+      <pre class="code-block"><code id="quickPy">import hashlib
+import requests
+
+BASE = "{{ base_url }}"
+PID = "{{ merchant_id or '你的商户ID' }}"
+KEY = "{{ merchant_key or '你的商户密钥' }}"
+
+params = {
+    "pid": PID,
+    "type": "alipay",
+    "out_trade_no": "ORDER20260101001",
+    "name": "测试商品",
+    "money": "1.00",
+    "notify_url": "https://your-site.com/pay/notify",
+}
+
+# 生成签名（排除 sign/sign_type/act/action/format）
+raw = "&".join(f"{k}={params[k]}" for k in sorted(params) if str(params[k]) != "")
+params["sign"] = hashlib.md5((raw + KEY).encode()).hexdigest()
+
+# 创建支付
+resp = requests.post(BASE + "/api/codepay", data={**params, "act": "submit", "format": "json"}).json()
+print(resp)
+
+# 展示二维码：resp["qr_code"] 为 PNG base64，前端拼成 data URI 即可显示
+
+# 轮询订单状态
+r = requests.get(BASE + "/api/codepay/status/" + params["out_trade_no"]).json()
+print(r["status"])  # 0 待支付 1 已支付 2 已过期</code><button class="copy-code" data-target="quickPy">复制</button></pre>
+    </section>
+
+    <!-- 回调验签 -->
+    <section class="card doc-card" id="callback">
+      <h2>回调验签示例（Flask）</h2>
+      <pre class="code-block"><code id="callbackPy">import hashlib
+from flask import Flask, request
+
+app = Flask(__name__)
+MERCHANT_KEY = "{{ merchant_key or '你的商户密钥' }}"
+
+def verify_sign(params: dict) -> bool:
+    received = params.get("sign", "")
+    ignored = {"sign", "sign_type", "act", "action", "format"}
+    filtered = {k: v for k, v in params.items() if k not in ignored and str(v) != ""}
+    raw = "&".join(f"{k}={filtered[k]}" for k in sorted(filtered))
+    return received == hashlib.md5((raw + MERCHANT_KEY).encode()).hexdigest()
+
+@app.post("/pay/notify")
+def notify():
+    params = request.form.to_dict() or request.args.to_dict()
+    if not verify_sign(params):
+        return "fail", 400
+    if params.get("trade_status") == "TRADE_SUCCESS":
+        order_no = params["out_trade_no"]
+        # TODO: 幂等地把订单标记已支付、发放商品
+    return "success"</code><button class="copy-code" data-target="callbackPy">复制</button></pre>
+    </section>
+
+    <!-- 参数拼装 -->
+    <section class="card doc-card" id="builder">
+      <h2>参数拼装 / 签名生成</h2>
+      <p>填写参数后自动补全 <span class="inline-code">pid</span> 并计算 <span class="inline-code">sign</span>，生成可直接用于联调的字符或 JSON 参数。<b>此操作不会创建订单。</b></p>
+      <div class="try-grid mt16">
+        <div class="try-form">
+          <label class="field"><span>接口 act</span>
+            <select id="bAct">
+              <option value="submit">submit 创建支付</option>
+              <option value="order">order 查询订单</option>
+              <option value="orders">orders 批量订单</option>
+              <option value="query">query 查询商户</option>
+              <option value="notify">notify 支付通知</option>
+            </select>
+          </label>
+          <label class="field" data-bacts="order,submit,notify"><span>out_trade_no</span>
+            <input id="bOutTradeNo" placeholder="ORDER20260101001">
+          </label>
+          <label class="field" data-bacts="submit"><span>name 商品名称</span>
+            <input id="bName" value="测试商品">
+          </label>
+          <label class="field" data-bacts="submit"><span>money 金额</span>
+            <input id="bMoney" value="1.00">
+          </label>
+          <label class="field" data-bacts="submit"><span>notify_url（可选）</span>
+            <input id="bNotifyUrl" placeholder="https://your-site.com/pay/notify">
+          </label>
+          <label class="field" data-bacts="orders"><span>limit 条数</span>
+            <input id="bLimit" type="number" value="20">
+          </label>
+          <button class="btn primary" id="buildBtn">生成签名参数</button>
+          <p class="small muted">字符格式为原始键值对，实际提交时按表单 / URL 编码规则处理；签名基于原始值计算。</p>
+        </div>
+        <div>
+          <div class="tabs">
+            <button class="tab active" data-target="buildResult" data-view="form">字符格式</button>
+            <button class="tab" data-target="buildResult" data-view="json">JSON 格式</button>
+          </div>
+          <div class="try-result" id="buildResult">等待生成…</div>
+          <div class="view-actions"><button class="btn sm" id="buildCopyBtn">复制当前内容</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 在线调试 -->
+    <section class="card doc-card" id="try">
+      <h2>在线调试</h2>
+      <p>服务端自动补全 <span class="inline-code">pid</span> 并计算签名。默认在服务内部直接执行（快速稳定）；勾选「通过 HTTP 发送」会请求本服务的 <span class="inline-code">/api/codepay</span>，验证完整链路（路由、验签、状态码、耗时）。</p>
+      <p class="small muted">注意：<b>submit</b> 会真实创建订单，<b>notify</b> 会把订单标记为已支付（商城订单会立即发货），请谨慎操作。</p>
+      <div class="try-grid mt16">
+        <div class="try-form">
+          <label class="field"><span>操作 act</span>
+            <select id="tryAct">
+              <option value="query">query 查询商户</option>
+              <option value="order">order 查询订单</option>
+              <option value="orders">orders 批量订单</option>
+              <option value="submit">submit 创建支付</option>
+              <option value="notify">notify 发送支付通知</option>
+              <option value="health">health 健康检查</option>
+            </select>
+          </label>
+          <label class="field" data-acts="order,submit,notify"><span>out_trade_no（可从历史订单选择）</span>
+            <input id="tryOutTradeNo" list="recentOrders" placeholder="订单号（submit 留空自动生成）">
+            <datalist id="recentOrders"></datalist>
+          </label>
+          <label class="field" data-acts="submit"><span>name 商品名称</span>
+            <input id="tryName" value="调试商品">
+          </label>
+          <label class="field" data-acts="submit"><span>money 金额</span>
+            <input id="tryMoney" value="0.01">
+          </label>
+          <label class="field" data-acts="submit"><span>notify_url（可选）</span>
+            <input id="tryNotifyUrl" placeholder="https://your-site.com/pay/notify">
+          </label>
+          <label class="field" data-acts="submit"><span>return_url（可选）</span>
+            <input id="tryReturnUrl" placeholder="https://your-site.com/pay/return">
+          </label>
+          <label class="field" data-acts="submit"><span>sitename（可选）</span>
+            <input id="trySitename" placeholder="站点名称">
+          </label>
+          <label class="field" data-acts="orders"><span>limit 条数</span>
+            <input id="tryLimit" type="number" value="10">
+          </label>
+          <label class="switch" style="margin:2px 0 10px;">
+            <input type="checkbox" id="tryOverHttp">
+            <span>通过 HTTP 发送（完整链路）</span>
+          </label>
+          <button class="btn primary" id="tryBtn">发送调试请求</button>
+          <p class="small muted">结果区支持 JSON / 字符视图切换，并可复制当前内容。</p>
+        </div>
+        <div>
+          <div class="tabs">
+            <button class="tab active" data-target="tryResult" data-view="json">JSON 视图</button>
+            <button class="tab" data-target="tryResult" data-view="form">字符视图</button>
+          </div>
+          <div id="tryMeta" class="small muted" style="margin-bottom:8px;min-height:18px;"></div>
+          <div class="try-result" id="tryResult">等待发送请求…</div>
+          <div class="view-actions"><button class="btn sm" id="tryCopyBtn">复制当前内容</button></div>
+          <div id="tryQrBox" style="display:none;margin-top:12px;">
+            <div class="small muted" style="margin-bottom:6px;">支付二维码</div>
+            <img id="tryQr" alt="支付二维码" style="width:180px;height:180px;border:1px solid var(--border);border-radius:12px;padding:8px;background:#fff;">
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const BASE_URL = {{ base_url|tojson }};
+const APP_ID = {{ app_id|tojson }};
+
+async function regenMerchant() {
+  if (!APP_ID) { toast('请先在「支付配置」填写 AppId', 'error'); return; }
+  if (!confirm('重新生成后，旧商户 ID / 密钥立即失效，所有对接方需同步更新。确认继续？')) return;
+  try {
+    const creds = await api('/api/admin/generate-merchant', {
+      method: 'POST', body: { app_id: APP_ID }
+    });
+    await api('/api/admin/pay-config', {
+      method: 'POST',
+      body: { merchant_id: creds.merchant_id, merchant_key: creds.merchant_key }
+    });
+    toast('商户凭据已更新', 'success');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-copy]');
+  if (btn) { copyText(btn.dataset.copy); return; }
+  const cbtn = e.target.closest('.copy-code');
+  if (cbtn) {
+    const target = document.getElementById(cbtn.dataset.target);
+    if (target) copyText(target.textContent);
+  }
+});
+
+// ---- 视图状态与标签页 ----
+let buildView = 'form';
+let tryView = 'json';
+let lastBuild = null;
+let lastTry = null;
+
+document.querySelectorAll('.tabs').forEach(tabs => {
+  tabs.addEventListener('click', e => {
+    const btn = e.target.closest('.tab');
+    if (!btn) return;
+    tabs.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+    const view = btn.dataset.view;
+    const target = btn.dataset.target;
+    if (target === 'buildResult') { buildView = view; renderBuild(); }
+    else if (target === 'tryResult') { tryView = view; renderTry(); }
+    else if (target === 'codeExample') {
+      document.getElementById('submitFormExample').style.display = view === 'form' ? 'block' : 'none';
+      document.getElementById('submitJsonExample').style.display = view === 'json' ? 'block' : 'none';
+    }
+  });
+});
+
+// ---- 参数拼装 / 签名生成 ----
+const bAct = document.getElementById('bAct');
+const buildResult = document.getElementById('buildResult');
+
+function syncBuilderFields() {
+  const act = bAct.value;
+  document.querySelectorAll('[data-bacts]').forEach(el => {
+    el.style.display = el.dataset.bacts.split(',').includes(act) ? 'block' : 'none';
+  });
+}
+
+bAct.addEventListener('change', syncBuilderFields);
+syncBuilderFields();
+
+function renderBuild() {
+  if (!lastBuild) return;
+  buildResult.textContent = buildView === 'form' ? lastBuild.form_string : lastBuild.json;
+}
+
+document.getElementById('buildBtn').addEventListener('click', async () => {
+  const act = bAct.value;
+  const params = {};
+  if (['order', 'submit', 'notify'].includes(act)) {
+    const v = document.getElementById('bOutTradeNo').value.trim();
+    if (v) params.out_trade_no = v;
+  }
+  if (act === 'submit') {
+    params.name = document.getElementById('bName').value.trim() || '测试商品';
+    params.money = document.getElementById('bMoney').value.trim() || '1.00';
+    const nu = document.getElementById('bNotifyUrl').value.trim();
+    if (nu) params.notify_url = nu;
+  }
+  if (act === 'orders') {
+    params.limit = parseInt(document.getElementById('bLimit').value || '20', 10);
+  }
+  const btn = document.getElementById('buildBtn');
+  btn.disabled = true;
+  buildResult.textContent = '生成中…';
+  try {
+    lastBuild = await api('/api/admin/api-sign', { method: 'POST', body: { act, params } });
+    renderBuild();
+  } catch (e) {
+    lastBuild = null;
+    buildResult.textContent = '生成失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('buildCopyBtn').addEventListener('click', () => {
+  if (lastBuild) copyText(buildResult.textContent);
+});
+
+const tryAct = document.getElementById('tryAct');
+const tryResult = document.getElementById('tryResult');
+const tryMeta = document.getElementById('tryMeta');
+const tryQrBox = document.getElementById('tryQrBox');
+const tryQr = document.getElementById('tryQr');
+
+function renderTryMeta(meta) {
+  if (!meta) { tryMeta.textContent = ''; return; }
+  const parts = [meta.mode === 'http' ? 'HTTP 请求' : '服务内部执行'];
+  if (meta.url) parts.push(`${meta.method || 'POST'} ${meta.url}`);
+  if (meta.status != null) parts.push(`状态 ${meta.status}`);
+  if (meta.elapsed_ms != null) parts.push(`耗时 ${meta.elapsed_ms} ms`);
+  tryMeta.textContent = parts.join(' · ');
+}
+
+async function loadRecentOrders() {
+  try {
+    const data = await api('/api/admin/orders?page=1&page_size=20');
+    document.getElementById('recentOrders').innerHTML = (data.orders || []).map(o =>
+      `<option value="${esc(o.out_trade_no)}">${esc(o.name)} · ${STATUS_TEXT[o.status] || o.status}</option>`
+    ).join('');
+  } catch (e) { /* 忽略 */ }
+}
+
+loadRecentOrders();
+
+function syncTryFields() {
+  const act = tryAct.value;
+  document.querySelectorAll('[data-acts]').forEach(el => {
+    const acts = el.dataset.acts.split(',');
+    el.style.display = acts.includes(act) ? 'block' : 'none';
+  });
+}
+
+tryAct.addEventListener('change', syncTryFields);
+syncTryFields();
+
+document.getElementById('tryBtn').addEventListener('click', async () => {
+  const act = tryAct.value;
+  const params = {};
+  if (['order', 'submit', 'notify'].includes(act)) {
+    const v = document.getElementById('tryOutTradeNo').value.trim();
+    if (v) params.out_trade_no = v;
+  }
+  if (act === 'submit') {
+    params.name = document.getElementById('tryName').value.trim() || '调试商品';
+    params.money = document.getElementById('tryMoney').value.trim() || '0.01';
+    const nu = document.getElementById('tryNotifyUrl').value.trim();
+    if (nu) params.notify_url = nu;
+    const ru = document.getElementById('tryReturnUrl').value.trim();
+    if (ru) params.return_url = ru;
+    const sn = document.getElementById('trySitename').value.trim();
+    if (sn) params.sitename = sn;
+  }
+  if (act === 'orders') {
+    params.limit = parseInt(document.getElementById('tryLimit').value || '10', 10);
+  }
+  if (act === 'notify' && !confirm('模拟通知会将该订单标记为已支付（商城订单会立即发货），确认继续？')) {
+    return;
+  }
+  const overHttp = document.getElementById('tryOverHttp').checked;
+
+  const btn = document.getElementById('tryBtn');
+  btn.disabled = true;
+  tryResult.textContent = '请求中…';
+  tryMeta.textContent = '';
+  tryQrBox.style.display = 'none';
+  try {
+    const r = await api('/api/admin/api-try', {
+      method: 'POST',
+      body: { act, params, over_http: overHttp },
+    });
+    lastTry = r;
+    renderTryMeta(r.meta);
+    renderTry();
+    if (r.response && r.response.qr_code_preview) {
+      tryQr.src = r.response.qr_code_preview;
+      tryQrBox.style.display = 'block';
+    }
+    loadRecentOrders();
+  } catch (e) {
+    lastTry = null;
+    tryMeta.textContent = '请求失败';
+    tryResult.textContent = '请求失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderTry() {
+  if (!lastTry) return;
+  if (tryView === 'json') {
+    tryResult.textContent = JSON.stringify(
+      { request: lastTry.request, response: lastTry.response }, null, 2);
+    return;
+  }
+  const req = lastTry.request || {};
+  const skip = new Set(['sign_type']);
+  const parts = [`act=${req.act || ''}`];
+  Object.keys(req).sort().forEach(k => {
+    if (k === 'act' || skip.has(k)) return;
+    const v = req[k];
+    if (v === '' || v == null) return;
+    parts.push(`${k}=${v}`);
+  });
+  tryResult.textContent = parts.join('&')
+    + '\n\n# 响应\n' + JSON.stringify(lastTry.response, null, 2);
+}
+
+document.getElementById('tryCopyBtn').addEventListener('click', () => {
+  if (lastTry) copyText(tryResult.textContent);
+});
+</script>
+{% endblock %}

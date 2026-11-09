@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} - {{ settings.shop_title }}{% endblock %}
+{% block content %}
+<div class="container">
+  <div class="card page-card product-detail">
+    <div class="head">
+      <div style="flex:1;min-width:240px;">
+        <a href="/" class="small muted">← 返回商城</a>
+        <h1 style="font-size:26px;margin-top:8px;">{{ product.name }}</h1>
+        <div class="desc">{{ product.description or '暂无商品描述' }}</div>
+        <div class="row mt16 small muted">
+          <span>已售 {{ product.sold_count }}</span>
+          {% if product.fulfill_mode == 'stock' %}<span>库存 {{ product.stock_count }}</span>{% endif %}
+          <span>{{ '自动生成卡密' if product.fulfill_mode == 'generate' else '库存卡密' }}</span>
+        </div>
+      </div>
+      <div style="min-width:220px;">
+        <div class="price" style="font-size:32px;">{{ '%.2f'|format(product.price) }}</div>
+        <p class="small muted mt8">支付成功后自动发货</p>
+      </div>
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:22px 0;">
+
+    <div class="grid-2" style="align-items:start;">
+      <div>
+        <label class="field">
+          <span>购买数量</span>
+          <div class="qty-box">
+            <button type="button" onclick="stepQty(-1)">−</button>
+            <input id="qty" type="number" value="1" min="1" max="{{ settings.max_qty_per_order }}">
+            <button type="button" onclick="stepQty(1)">+</button>
+          </div>
+        </label>
+        <label class="field">
+          <span>备注（邮箱 / QQ / 手机号，用于查询订单）</span>
+          <input id="contact" type="text" maxlength="200" placeholder="例如：qq123456 或 mail@example.com">
+        </label>
+        <button class="btn primary" id="buyBtn" style="width:100%;padding:12px;font-size:15px;">立即购买</button>
+        <p class="small muted mt8">下单后将跳转到支付页面，支付成功后本页订单可凭备注查询卡密。</p>
+      </div>
+      <div class="card" style="padding:18px;background:#fafbfd;">
+        <h3 style="font-size:15px;">购买说明</h3>
+        <ul class="tips">
+          <li>下单后请在支付页面按提示完成付款</li>
+          <li>系统自动核验到账，无需人工确认</li>
+          <li>发货后卡密会显示在支付结果与订单查询中</li>
+          <li>如遇问题可凭备注联系在线客服</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TOKEN = {{ token|tojson }};
+const PRODUCT_ID = {{ product.id }};
+const MAX_QTY = {{ settings.max_qty_per_order }};
+
+function stepQty(d) {
+  const el = document.getElementById('qty');
+  let v = parseInt(el.value || '1', 10) + d;
+  v = Math.max(1, Math.min(MAX_QTY, v));
+  el.value = v;
+}
+
+async function buy() {
+  const btn = document.getElementById('buyBtn');
+  const qty = parseInt(document.getElementById('qty').value || '1', 10);
+  const contact = document.getElementById('contact').value.trim();
+  if (!contact) { alert('请填写备注，用于查询订单'); return; }
+  btn.disabled = true; btn.textContent = '正在创建订单...';
+  try {
+    const resp = await fetch('/api/shop/order', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ token: TOKEN, product_id: PRODUCT_ID, qty, contact })
+    });
+    const data = await resp.json();
+    if (data.code !== 1) throw new Error(data.msg || '下单失败');
+    if (data.trade_no) {
+      location.href = '/pay/' + data.trade_no;
+    } else {
+      throw new Error('未获取到支付订单号，请重试');
+    }
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false; btn.textContent = '立即购买';
+  }
+}
+document.getElementById('buyBtn').addEventListener('click', buy);
+</script>
+{% endblock %}

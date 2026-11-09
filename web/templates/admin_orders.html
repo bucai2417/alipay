@@ -1,0 +1,126 @@
+{% extends "admin_base.html" %}
+{% block title %}码支付订单 - 管理后台{% endblock %}
+{% block heading %}码支付订单{% endblock %}
+{% block subheading %}所有通过码支付协议或商城创建的支付订单{% endblock %}
+{% block head_actions %}
+  <button class="btn" id="exportBtn">导出 CSV</button>
+  <button class="btn primary" id="refreshBtn">刷新</button>
+{% endblock %}
+
+{% block content %}
+<div class="card panel">
+  <div class="toolbar">
+    <select id="statusFilter">
+      <option value="">全部状态</option>
+      <option value="0">待支付</option>
+      <option value="1">已支付</option>
+      <option value="2">已过期</option>
+    </select>
+    <input id="searchInput" type="text" placeholder="订单号 / 商品名">
+    <button class="btn" id="searchBtn">搜索</button>
+    <span class="small muted" id="totalText"></span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>平台订单号</th><th>商户单号</th><th>商品</th>
+          <th>金额</th><th>实付</th><th>状态</th>
+          <th>创建时间</th><th>支付时间</th><th style="width:170px;">操作</th>
+        </tr>
+      </thead>
+      <tbody id="orderRows"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <button class="btn sm" id="prevBtn">上一页</button>
+    <span id="pageText" style="align-self:center;"></span>
+    <button class="btn sm" id="nextBtn">下一页</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let page = 1;
+const pageSize = 20;
+let total = 0;
+
+async function load() {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  const status = document.getElementById('statusFilter').value;
+  const search = document.getElementById('searchInput').value.trim();
+  if (status !== '') params.set('status', status);
+  if (search) params.set('search', search);
+
+  try {
+    const data = await api('/api/admin/orders?' + params.toString());
+    total = data.total || 0;
+    document.getElementById('totalText').textContent = `共 ${total} 笔`;
+    const rows = data.orders || [];
+    if (!rows.length) {
+      document.getElementById('orderRows').innerHTML = '<tr><td colspan="9" class="empty">暂无订单</td></tr>';
+    } else {
+      document.getElementById('orderRows').innerHTML = rows.map(o => `
+        <tr>
+          <td class="mono">${esc(o.id)}</td>
+          <td class="mono">${esc(o.out_trade_no)}</td>
+          <td>${esc(o.name)}</td>
+          <td>¥${fmtMoney(o.price)}</td>
+          <td>¥${fmtMoney(o.payment_amount)}</td>
+          <td><span class="badge ${STATUS_CLASS[o.status] || ''}">${STATUS_TEXT[o.status] || o.status}</span></td>
+          <td class="small">${esc(o.add_time)}</td>
+          <td class="small">${esc(o.pay_time || '-')}</td>
+          <td>
+            ${o.status === 0 ? `<button class="btn sm success" onclick="setStatus('${esc(o.id)}', 1)">标记支付</button>` : ''}
+            ${o.status === 0 ? `<button class="btn sm" onclick="setStatus('${esc(o.id)}', 2)">置过期</button>` : ''}
+            <button class="btn sm danger" onclick="removeOrder('${esc(o.id)}')">删除</button>
+          </td>
+        </tr>`).join('');
+    }
+    const maxPage = Math.max(1, Math.ceil(total / pageSize));
+    document.getElementById('pageText').textContent = `${page} / ${maxPage}`;
+    document.getElementById('prevBtn').disabled = page <= 1;
+    document.getElementById('nextBtn').disabled = page >= maxPage;
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function setStatus(id, status) {
+  if (status === 1 && !confirm('确认将该订单标记为已支付？将触发商城发货与商户回调。')) return;
+  try {
+    await api(`/api/admin/orders/${encodeURIComponent(id)}/status`, { method: 'POST', body: { status } });
+    toast('状态已更新', 'success');
+    load();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function removeOrder(id) {
+  if (!confirm('删除后不可恢复，确认删除该订单？')) return;
+  try {
+    await api(`/api/admin/orders/${encodeURIComponent(id)}/delete`, { method: 'POST' });
+    toast('已删除', 'success');
+    load();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', load);
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const params = new URLSearchParams();
+  const status = document.getElementById('statusFilter').value;
+  const search = document.getElementById('searchInput').value.trim();
+  if (status !== '') params.set('status', status);
+  if (search) params.set('search', search);
+  location.href = '/api/admin/orders/export?' + params.toString();
+});
+document.getElementById('searchBtn').addEventListener('click', () => { page = 1; load(); });
+document.getElementById('statusFilter').addEventListener('change', () => { page = 1; load(); });
+document.getElementById('searchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { page = 1; load(); }
+});
+document.getElementById('prevBtn').addEventListener('click', () => { if (page > 1) { page--; load(); } });
+document.getElementById('nextBtn').addEventListener('click', () => { page++; load(); });
+
+load();
+</script>
+{% endblock %}

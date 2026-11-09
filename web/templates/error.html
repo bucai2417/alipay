@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }}</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="login-page">
+    <div class="card login-card" style="max-width:440px;text-align:center;">
+      <div style="font-size:42px;margin-bottom:12px;">⚠️</div>
+      <h1 style="font-size:20px;">{{ title }}</h1>
+      <p class="muted" style="margin:10px 0 22px;">{{ message }}</p>
+      <a class="btn primary" href="/">返回商城</a>
+    </div>
+  </div>
+</body>
+</html>

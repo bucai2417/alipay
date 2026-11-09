@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}订单查询 - {{ settings.shop_title }}{% endblock %}
+{% block content %}
+<div class="query-box">
+  <div class="card page-card">
+    <h1 style="font-size:22px;">订单查询</h1>
+    <p class="muted small mt8">输入订单号或下单备注（邮箱 / QQ / 手机号）查询支付与发货结果。</p>
+
+    <div class="row mt16">
+      <input id="queryInput" type="text" placeholder="订单号 或 下单备注" style="flex:1;min-width:220px;"
+             value="{{ request.args.get('order_no', '') }}">
+      <button class="btn primary" id="queryBtn">查询</button>
+    </div>
+
+    <div id="result" class="mt16"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TOKEN = {{ token|tojson }};
+const STATUS_TEXT = { pending: '待支付', paid: '已支付', fulfilled: '已发货', expired: '已过期', failed: '发货失败' };
+const STATUS_CLASS = { pending: 'orange', paid: 'blue', fulfilled: 'green', expired: 'red', failed: 'red' };
+
+function esc(v) {
+  return String(v == null ? '' : v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+}
+
+function renderOrders(orders) {
+  const box = document.getElementById('result');
+  if (!orders || !orders.length) {
+    box.innerHTML = '<div class="empty">未找到相关订单</div>';
+    return;
+  }
+  box.innerHTML = orders.map(o => `
+    <div class="card" style="padding:18px;margin-bottom:14px;">
+      <div class="spread">
+        <div>
+          <div style="font-weight:600;">${esc(o.product_name)}</div>
+          <div class="small muted mt8">订单号 <span class="mono">${esc(o.order_no)}</span></div>
+          <div class="small muted">下单时间 ${esc(o.created_at)}${o.paid_at ? ' · 支付时间 ' + esc(o.paid_at) : ''}</div>
+          <div class="small muted">备注 ${esc(o.contact || '-')}</div>
+        </div>
+        <div style="text-align:right;">
+          <span class="badge ${STATUS_CLASS[o.status] || ''}">${STATUS_TEXT[o.status] || esc(o.status)}</span>
+          <div class="price mt8" style="font-size:20px;">${esc(o.money)}</div>
+          <div class="small muted">数量 ${esc(o.qty)}</div>
+        </div>
+      </div>
+      ${o.cards ? `<div class="cards-box"><div class="small muted" style="margin-bottom:6px;">卡密 / 发货内容</div><pre>${esc(o.cards)}</pre></div>` : ''}
+      ${o.fail_reason ? `<p class="small" style="color:var(--danger);margin-top:10px;">发货失败：${esc(o.fail_reason)}</p>` : ''}
+    </div>
+  `).join('');
+}
+
+async function doQuery() {
+  const q = document.getElementById('queryInput').value.trim();
+  if (q.length < 4) { alert('查询内容至少 4 个字符'); return; }
+  const btn = document.getElementById('queryBtn');
+  btn.disabled = true; btn.textContent = '查询中...';
+  try {
+    const resp = await fetch('/api/shop/query', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ token: TOKEN, query: q })
+    });
+    const data = await resp.json();
+    if (data.code !== 1) {
+      document.getElementById('result').innerHTML =
+        `<div class="empty">${esc(data.msg || '未找到相关订单')}</div>`;
+      return;
+    }
+    renderOrders(data.orders || []);
+  } catch (e) {
+    alert('查询失败：' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '查询';
+  }
+}
+
+document.getElementById('queryBtn').addEventListener('click', doQuery);
+document.getElementById('queryInput').addEventListener('keydown', e => { if (e.key === 'Enter') doQuery(); });
+if (document.getElementById('queryInput').value.trim().length >= 4) doQuery();
+</script>
+{% endblock %}

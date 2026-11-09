@@ -1,0 +1,225 @@
+{% extends "admin_base.html" %}
+{% block title %}支付配置 - 管理后台{% endblock %}
+{% block heading %}支付配置{% endblock %}
+{% block subheading %}支付宝应用、商户凭据、收款方式与监控参数{% endblock %}
+{% block head_actions %}
+  <button class="btn" id="healthBtn">检查配置</button>
+  <button class="btn primary" id="saveBtn">保存配置</button>
+{% endblock %}
+
+{% block content %}
+<div id="readyHint" class="alert" style="display:none;"></div>
+<div id="healthResult" class="card panel mt8" style="display:none;"></div>
+
+<div class="grid-2 mt16">
+  <div class="card panel">
+    <h2>支付宝应用</h2>
+    <p class="small muted" style="margin-bottom:16px;">需完成应用密钥、商户凭据配置；转账模式需收款账号 userId，经营码模式需上传收款二维码。</p>
+    <label class="field"><span>AppId</span><input id="app_id" placeholder="支付宝开放平台应用 AppId"></label>
+    <label class="field"><span>应用私钥（支持 PKCS#1 / PKCS#8）</span>
+      <textarea id="private_key" rows="5" placeholder="-----BEGIN RSA PRIVATE KEY-----"></textarea>
+    </label>
+    <label class="field"><span>支付宝公钥</span>
+      <textarea id="alipay_public_key" rows="4" placeholder="-----BEGIN PUBLIC KEY-----"></textarea>
+    </label>
+    <p class="small muted" style="margin:-8px 0 14px;">敏感字段留空保存时保持原值不变；迁移服务器后需重新粘贴。</p>
+    <label class="field"><span>转账收款账号 userId（转账链接模式必填）</span>
+      <input id="transfer_user_id" placeholder="2088xxxxxxxxxxxx">
+    </label>
+    <p class="small muted">账单查询使用 <span class="mono">alipay.data.bill.accountlog.query</span>，
+      需要开通对账单权限并配置相同的应用密钥。</p>
+  </div>
+
+  <div class="card panel">
+    <h2>商户凭据（码支付协议）</h2>
+    <label class="field"><span>商户 ID（pid）</span><input id="merchant_id"></label>
+    <label class="field"><span>商户密钥（key）</span><input id="merchant_key"></label>
+    <p class="small muted" style="margin:-8px 0 10px;">留空表示保持原值不变。</p>
+    <button class="btn" id="genMerchantBtn">按 AppId 自动生成商户凭据</button>
+    <p class="small muted mt8">外部站点通过在 <span class="mono">/api/codepay</span> 提交 pid/key/MD5 签名对接。</p>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:22px 0;">
+
+    <h2>收款方式</h2>
+    <label class="switch" style="margin-bottom:14px;">
+      <input type="checkbox" id="business_qr_mode">
+      <span>经营码模式（固定收款码 + 每单唯一金额）</span>
+    </label>
+    <p class="small muted">关闭时为转账链接模式（生成带备注的转账二维码，按备注匹配账单）。</p>
+
+    <label class="field mt16"><span>经营码二维码图片</span>
+      <input type="file" id="qrFile" accept="image/*">
+    </label>
+    <div class="row">
+      <img id="qrPreview" alt="经营码" style="width:120px;height:120px;object-fit:contain;border:1px solid var(--border);border-radius:10px;">
+      <div class="small muted" id="qrPathText">未上传</div>
+    </div>
+    <input type="hidden" id="qr_code_path">
+
+    <div class="grid-2 mt16">
+      <label class="field"><span>金额递增偏移（元）</span><input id="amount_offset" type="number" step="0.01" min="0.01"></label>
+      <label class="field"><span>匹配时间容差（秒）</span><input id="match_tolerance" type="number" min="10"></label>
+    </div>
+  </div>
+</div>
+
+<div class="grid-2 mt16">
+  <div class="card panel">
+    <h2>监控参数</h2>
+    <div class="grid-3">
+      <label class="field"><span>订单超时（秒）</span><input id="order_timeout" type="number" min="60"></label>
+      <label class="field"><span>监控间隔（秒）</span><input id="monitor_interval" type="number" min="3"></label>
+      <label class="field"><span>回溯查询（分钟）</span><input id="query_minutes_back" type="number" min="1"></label>
+    </div>
+    <p class="small muted">账单监控在后台线程运行，修改参数后自动生效，无需重启。</p>
+  </div>
+
+  <div class="card panel">
+    <h2>PushPlus 通知</h2>
+    <label class="switch" style="margin-bottom:14px;">
+      <input type="checkbox" id="pushplus_enabled"><span>启用支付/成交通知</span>
+    </label>
+    <label class="field"><span>PushPlus Token</span><input id="pushplus_token"></label>
+    <div class="grid-2">
+      <label class="field"><span>消息模板</span>
+        <select id="pushplus_template">
+          <option value="markdown">markdown</option>
+          <option value="html">html</option>
+          <option value="txt">txt</option>
+        </select>
+      </label>
+      <label class="field"><span>标题前缀</span><input id="pushplus_title_prefix"></label>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadConfig() {
+  const c = await api('/api/admin/pay-config');
+  for (const key of ['app_id','private_key','alipay_public_key','transfer_user_id',
+                     'merchant_id','merchant_key','amount_offset','match_tolerance',
+                     'order_timeout','monitor_interval','query_minutes_back',
+                     'pushplus_token','pushplus_template','pushplus_title_prefix','qr_code_path']) {
+    const el = document.getElementById(key);
+    if (el && c[key] != null) el.value = c[key];
+  }
+  document.getElementById('business_qr_mode').checked = !!c.business_qr_mode;
+  document.getElementById('pushplus_enabled').checked = !!c.pushplus_enabled;
+  updateQrPreview();
+  refreshReady();
+}
+
+async function refreshReady() {
+  try {
+    const h = await api('/api/admin/health');
+    const el = document.getElementById('readyHint');
+    el.style.display = 'block';
+    if (h.payment_ready) {
+      el.className = 'hint-box';
+      el.innerHTML = '支付已就绪：商城下单、码支付协议与账单监控均可正常工作。';
+    } else {
+      el.className = 'alert';
+      el.textContent = '支付未就绪：' + (h.payment_reason || '请完成支付配置');
+    }
+  } catch (e) { /* 忽略健康检查失败 */ }
+}
+
+function updateQrPreview() {
+  const path = document.getElementById('qr_code_path').value;
+  const img = document.getElementById('qrPreview');
+  const text = document.getElementById('qrPathText');
+  if (path) {
+    img.src = '/api/admin/qr-image?path=' + encodeURIComponent(path) + '&t=' + Date.now();
+    img.style.display = 'block';
+    text.textContent = path;
+  } else {
+    img.style.display = 'none';
+    text.textContent = '未上传';
+  }
+}
+
+async function save() {
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  try {
+    await api('/api/admin/pay-config', {
+      method: 'POST',
+      body: {
+        app_id: document.getElementById('app_id').value.trim(),
+        private_key: document.getElementById('private_key').value,
+        alipay_public_key: document.getElementById('alipay_public_key').value,
+        transfer_user_id: document.getElementById('transfer_user_id').value.trim(),
+        merchant_id: document.getElementById('merchant_id').value.trim(),
+        merchant_key: document.getElementById('merchant_key').value,
+        business_qr_mode: document.getElementById('business_qr_mode').checked,
+        qr_code_path: document.getElementById('qr_code_path').value,
+        amount_offset: document.getElementById('amount_offset').value,
+        match_tolerance: document.getElementById('match_tolerance').value,
+        order_timeout: document.getElementById('order_timeout').value,
+        monitor_interval: document.getElementById('monitor_interval').value,
+        query_minutes_back: document.getElementById('query_minutes_back').value,
+        pushplus_enabled: document.getElementById('pushplus_enabled').checked,
+        pushplus_token: document.getElementById('pushplus_token').value,
+        pushplus_template: document.getElementById('pushplus_template').value,
+        pushplus_title_prefix: document.getElementById('pushplus_title_prefix').value,
+      }
+    });
+    toast('配置已保存', 'success');
+    refreshReady();
+  } catch (e) { toast(e.message, 'error'); }
+  btn.disabled = false;
+}
+
+async function generateMerchant() {
+  const appId = document.getElementById('app_id').value.trim();
+  if (!appId) { toast('请先填写 AppId', 'error'); return; }
+  try {
+    const r = await api('/api/admin/generate-merchant', { method: 'POST', body: { app_id: appId } });
+    document.getElementById('merchant_id').value = r.merchant_id;
+    document.getElementById('merchant_key').value = r.merchant_key;
+    toast('商户凭据已生成，请点击保存', 'success');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function uploadQr(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await api('/api/admin/upload-qr', { method: 'POST', body: fd });
+    document.getElementById('qr_code_path').value = r.path;
+    document.getElementById('business_qr_mode').checked = true;
+    updateQrPreview();
+    toast('二维码已上传', 'success');
+    refreshReady();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function checkHealth() {
+  const box = document.getElementById('healthResult');
+  box.style.display = 'block';
+  try {
+    const h = await api('/api/admin/health');
+    const cfgRows = Object.entries(h.config).map(([k, v]) =>
+      `<tr><td>${esc(k)}</td><td><span class="badge ${String(v).includes('OK') ? 'green' : 'red'}">${esc(v)}</span></td></tr>`).join('');
+    const depRows = Object.entries(h.dependencies).map(([k, v]) =>
+      `<tr><td>${esc(k)}</td><td><span class="badge ${v === 'OK' ? 'green' : 'red'}">${esc(v)}</span></td></tr>`).join('');
+    box.innerHTML = `<h2>配置检查</h2><div class="grid-2">
+      <table><tbody>${cfgRows}</tbody></table>
+      <table><tbody>${depRows}
+        <tr><td>数据库</td><td><span class="badge ${h.database.status === 'OK' ? 'green' : 'red'}">${esc(h.database.status)}</span></td></tr>
+      </tbody></table></div>`;
+  } catch (e) { box.innerHTML = `<p style="color:var(--danger)">${esc(e.message)}</p>`; }
+}
+
+document.getElementById('saveBtn').addEventListener('click', save);
+document.getElementById('genMerchantBtn').addEventListener('click', generateMerchant);
+document.getElementById('healthBtn').addEventListener('click', checkHealth);
+document.getElementById('qrFile').addEventListener('change', e => {
+  if (e.target.files && e.target.files[0]) uploadQr(e.target.files[0]);
+});
+
+loadConfig().catch(e => toast(e.message, 'error'));
+</script>
+{% endblock %}

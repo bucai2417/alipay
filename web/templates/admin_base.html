@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}管理后台{% endblock %}</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M6 2h12a1 1 0 0 1 1 1v18l-3-2-3 2-3-2-3 2V3a1 1 0 0 1 1-1z"/><path d="M9 7h6M9 11h6M9 15h4"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></symbol>
+    <symbol id="i-cart" viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.4 12.2A2 2 0 0 0 9.36 17H19a2 2 0 0 0 1.96-1.6L22 8H6"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5z"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-2.5 2-3z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></symbol>
+  </defs>
+</svg>
+
+<div class="admin-layout">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">卡</span><span>码支付后台</span></div>
+    <nav>
+      <a href="/admin/" class="{{ 'active' if page == 'dashboard' }}"><svg class="nav-ico"><use href="#i-dashboard"/></svg><span>概览</span></a>
+      <a href="/admin/pay-config" class="{{ 'active' if page == 'pay_config' }}"><svg class="nav-ico"><use href="#i-settings"/></svg><span>支付配置</span></a>
+      <a href="/admin/orders" class="{{ 'active' if page == 'orders' }}"><svg class="nav-ico"><use href="#i-receipt"/></svg><span>码支付订单</span></a>
+      <a href="/admin/products" class="{{ 'active' if page == 'products' }}"><svg class="nav-ico"><use href="#i-box"/></svg><span>商品管理</span></a>
+      <a href="/admin/shop-orders" class="{{ 'active' if page == 'shop_orders' }}"><svg class="nav-ico"><use href="#i-cart"/></svg><span>商城订单</span></a>
+      <a href="/admin/feedback" class="{{ 'active' if page == 'feedback' }}"><svg class="nav-ico"><use href="#i-chat"/></svg><span>客服工单</span></a>
+      <a href="/admin/api-docs" class="{{ 'active' if page == 'api_docs' }}"><svg class="nav-ico"><use href="#i-code"/></svg><span>开发接口</span></a>
+      <a href="/admin/settings" class="{{ 'active' if page == 'settings' }}"><svg class="nav-ico"><use href="#i-wrench"/></svg><span>系统设置</span></a>
+      <a href="/" target="_blank"><svg class="nav-ico"><use href="#i-globe"/></svg><span>前台商城</span></a>
+    </nav>
+    <div class="foot">
+      <div>当前账号：{{ username }}</div>
+      <div class="mt8"><a href="/admin/logout" style="color:#94a3b8;">退出登录</a></div>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1>{% block heading %}{% endblock %}</h1>
+        <div class="sub">{% block subheading %}{% endblock %}</div>
+      </div>
+      <div>{% block head_actions %}{% endblock %}</div>
+    </div>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

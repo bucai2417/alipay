@@ -1,0 +1,7 @@
+Flask>=3.0
+requests>=2.31
+qrcode[pil]>=7.4
+Pillow>=10.0
+cryptography>=42.0
+rsa>=4.9
+alipay-sdk-python

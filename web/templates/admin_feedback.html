@@ -1,0 +1,137 @@
+{% extends "admin_base.html" %}
+{% block title %}客服工单 - 管理后台{% endblock %}
+{% block heading %}客服工单{% endblock %}
+{% block subheading %}买家按备注发起的客服会话{% endblock %}
+{% block head_actions %}
+  <button class="btn primary" id="refreshBtn">刷新</button>
+{% endblock %}
+
+{% block content %}
+<div class="grid-2" style="grid-template-columns: 340px 1fr; align-items:start;">
+  <div class="card panel">
+    <div class="toolbar">
+      <select id="statusFilter">
+        <option value="">全部</option>
+        <option value="open">待回复</option>
+        <option value="replied">已回复</option>
+        <option value="closed">已关闭</option>
+      </select>
+      <label class="switch small"><input type="checkbox" id="unreadOnly"><span>仅未读</span></label>
+    </div>
+    <div id="ticketList" style="max-height:62vh;overflow-y:auto;">
+      <div class="empty">加载中...</div>
+    </div>
+  </div>
+
+  <div class="card panel" id="detailPanel">
+    <div class="empty">请选择左侧工单查看会话</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentTicket = null;
+
+function escText(v) {
+  return String(v == null ? '' : v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+}
+function fmtTime(s) { return s || ''; }
+
+async function loadTickets() {
+  const params = new URLSearchParams({ page: 1, page_size: 100 });
+  const status = document.getElementById('statusFilter').value;
+  if (status) params.set('status', status);
+  if (document.getElementById('unreadOnly').checked) params.set('unread', 'true');
+  try {
+    const data = await api('/api/admin/feedback/tickets?' + params.toString());
+    const list = data.tickets || [];
+    if (!list.length) {
+      document.getElementById('ticketList').innerHTML = '<div class="empty">暂无工单</div>';
+      return;
+    }
+    document.getElementById('ticketList').innerHTML = list.map(t => `
+      <div class="card" style="padding:12px;margin-bottom:8px;cursor:pointer;${t.id === currentTicket ? 'border-color:var(--primary);' : ''}"
+           onclick="openTicket(${t.id})">
+        <div class="spread">
+          <b style="font-size:14px;">${escText(t.contact)}</b>
+          ${t.unread ? '<span class="badge red">未读</span>' : `<span class="badge">${({open:'待回复',replied:'已回复',closed:'已关闭'})[t.status] || t.status}</span>`}
+        </div>
+        <div class="small muted" style="margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escText(t.last_message || '（暂无消息）')}</div>
+        <div class="small muted">${escText(t.updated_at || '')}</div>
+      </div>`).join('');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function openTicket(id) {
+  try {
+    const data = await api('/api/admin/feedback/tickets/' + id);
+    currentTicket = id;
+    const t = data.ticket;
+    const msgs = data.messages || [];
+    const panel = document.getElementById('detailPanel');
+    panel.innerHTML = `
+      <div class="spread">
+        <div>
+          <h2 style="margin:0;">${escText(t.contact)}</h2>
+          <div class="small muted">会话 #${t.id} · 创建 ${escText(t.created_at)}</div>
+        </div>
+        <div class="row">
+          <span class="badge ${t.status === 'closed' ? 'red' : 'green'}">${({open:'待回复',replied:'已回复',closed:'已关闭'})[t.status] || t.status}</span>
+          ${t.status !== 'closed'
+            ? `<button class="btn sm" onclick="setTicketStatus('closed')">关闭会话</button>`
+            : `<button class="btn sm success" onclick="setTicketStatus('open')">重新开启</button>`}
+        </div>
+      </div>
+      <div class="ticket-messages" id="msgBox">
+        ${msgs.map(m => `<div class="msg ${m.sender === 'admin' ? 'admin' : 'user'}">${escText(m.content)}<span class="time">${escText(m.created_at)}</span></div>`).join('')}
+      </div>
+      <div class="row">
+        <input id="replyInput" type="text" placeholder="${t.status === 'closed' ? '会话已关闭，可先重新开启' : '输入回复内容，回车发送'}"
+               style="flex:1;min-width:200px;" maxlength="2000" ${t.status === 'closed' ? 'disabled' : ''}>
+        <button class="btn primary" id="replyBtn" ${t.status === 'closed' ? 'disabled' : ''}>回复</button>
+      </div>`;
+    const box = document.getElementById('msgBox');
+    box.scrollTop = box.scrollHeight;
+    const input = document.getElementById('replyInput');
+    if (input && !input.disabled) {
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') reply(); });
+    }
+    const btn = document.getElementById('replyBtn');
+    if (btn) btn.addEventListener('click', reply);
+    loadTickets();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function reply() {
+  const input = document.getElementById('replyInput');
+  const content = input.value.trim();
+  if (!content) return;
+  try {
+    const data = await api(`/api/admin/feedback/tickets/${currentTicket}/reply`, {
+      method: 'POST', body: { content }
+    });
+    if (data.code !== 1) throw new Error(data.msg || '回复失败');
+    input.value = '';
+    openTicket(currentTicket);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function setTicketStatus(status) {
+  try {
+    const data = await api(`/api/admin/feedback/tickets/${currentTicket}/status`, {
+      method: 'POST', body: { status }
+    });
+    if (data.code !== 1) throw new Error(data.msg || '操作失败');
+    toast('已更新', 'success');
+    openTicket(currentTicket);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', loadTickets);
+document.getElementById('statusFilter').addEventListener('change', loadTickets);
+document.getElementById('unreadOnly').addEventListener('change', loadTickets);
+
+loadTickets();
+</script>
+{% endblock %}

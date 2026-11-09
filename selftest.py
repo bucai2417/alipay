@@ -1,0 +1,387 @@
+"""端到端自测：配置、商品、下单、支付页、发货、查询、客服、协议与后台。
+
+使用独立数据目录 data_selftest，不影响正式数据。
+支付到账由测试代码直接调用内部 mark_paid 模拟（不暴露任何演示接口）。
+"""
+
+import hashlib
+import io
+import os
+import shutil
+import sys
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+TEST_DATA = os.path.join(BASE, "data_selftest")
+if os.path.isdir(TEST_DATA):
+    shutil.rmtree(TEST_DATA, ignore_errors=True)
+os.environ["ALIPAY_DATA_DIR"] = TEST_DATA
+os.environ["ALIPAY_MONITOR"] = "0"
+sys.path.insert(0, BASE)
+
+from web.factory import create_app  # noqa: E402
+
+PASS, FAIL = 0, 0
+IGNORED_SIGN_KEYS = {"sign", "sign_type", "act", "action", "format"}
+
+
+def check(name, cond, detail=""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"[PASS] {name}")
+    else:
+        FAIL += 1
+        print(f"[FAIL] {name} {detail}")
+
+
+def make_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    priv = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ).decode()
+    pub = key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    return priv, pub
+
+
+def main():
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    # ---------- 登录与商品 ----------
+    r = c.get("/api/admin/stats")
+    check("未登录拦截", r.status_code == 401, r.status_code)
+
+    r = c.post("/admin/login", data={"username": "admin", "password": "admin123"},
+               follow_redirects=False)
+    check("管理员登录", r.status_code == 302, r.status_code)
+
+    r = c.post("/api/admin/products", json={
+        "name": "自动生成商品", "description": "每单生成 2 条卡密",
+        "price": 0.02, "fulfill_mode": "generate", "status": 1,
+        "generate_config": {"prefix": "TEST-", "length": 8, "charset": "hex", "quantity": 2},
+    })
+    gen_product = r.get_json().get("product")
+    check("创建自动生成商品", bool(gen_product and gen_product.get("id")))
+
+    r = c.post("/api/admin/products", json={
+        "name": "库存商品", "description": "库存卡密",
+        "price": 0.01, "fulfill_mode": "stock", "status": 1,
+    })
+    stock_product = r.get_json().get("product")
+    check("创建库存商品", bool(stock_product and stock_product.get("id")))
+
+    r = c.post(f"/api/admin/products/{stock_product['id']}/cards/import",
+               json={"text": "CARD-A\nCARD-B\nCARD-C\nCARD-A\n"})
+    res = r.get_json()
+    check("导入卡密去重", res.get("success") and res.get("imported") == 3
+          and res.get("stock_count") == 3, res)
+
+    from shop.guard import guard
+
+    token = guard.issue_token()
+
+    # ---------- 未配置支付时必须拒绝下单 ----------
+    r = c.post("/api/shop/order", json={
+        "token": token, "product_id": gen_product["id"], "qty": 1,
+        "contact": "tester@example.com",
+    })
+    d = r.get_json()
+    check("未配置支付禁止下单", r.status_code == 400
+          and "支付未就绪" in (d.get("msg") or ""), d)
+
+    # ---------- 配置真实支付宝（转账链接模式） ----------
+    priv, pub = make_keypair()
+    payload = {
+        "app_id": "2021000000000000",
+        "private_key": priv,
+        "alipay_public_key": pub,
+        "transfer_user_id": "2088000000000000",
+        "merchant_id": "1234567890123456",
+        "merchant_key": "0123456789abcdef0123456789abcdef",
+        "business_qr_mode": False,
+        "order_timeout": 300,
+        "monitor_interval": 10,
+        "query_minutes_back": 30,
+        "pushplus_enabled": False,
+    }
+    r = c.post("/api/admin/pay-config", json=payload)
+    check("保存支付配置", r.status_code == 200 and r.get_json().get("success"), r.data[:200])
+
+    cfg = c.get("/api/admin/pay-config").get_json()
+    check("配置回读", cfg.get("app_id") == payload["app_id"]
+          and cfg.get("transfer_user_id") == payload["transfer_user_id"]
+          and "sandbox_mode" not in cfg)
+    h = c.get("/health").get_json()
+    check("收款就绪", h.get("payment_ready") is True, h)
+
+    # ---------- 商城下单（转账模式） ----------
+    r = c.post("/api/shop/order", json={
+        "token": token, "product_id": gen_product["id"], "qty": 1,
+        "contact": "tester@example.com",
+    })
+    d = r.get_json()
+    check("商城下单", r.status_code == 200 and d.get("code") == 1, d)
+    order_no, trade_no = d.get("order_no"), d.get("trade_no")
+    check("返回支付订单号", bool(trade_no))
+
+    html = c.get(f"/pay/{trade_no}").get_data(as_text=True)
+    check("转账支付页二维码", "data:image/png;base64," in html, html[:200])
+    check("支付页无演示按钮", "模拟支付" not in html)
+
+    from alipay_pay.monitor import mark_paid
+
+    res = mark_paid(trade_no, detected_by="selftest")
+    check("标记支付成功", res.get("changed") is True, res)
+
+    st = c.get(f"/api/pay/status/{trade_no}").get_json()
+    check("支付状态已支付", st.get("paid") is True, st)
+    check("商城已发货", st.get("shop_status") == "fulfilled", st)
+    check("卡密生成 2 条",
+          len([x for x in (st.get("shop_cards") or "").splitlines() if x]) == 2,
+          st.get("shop_cards"))
+
+    r = c.post("/api/shop/query", json={"token": token, "query": "tester@example.com"})
+    q = r.get_json()
+    check("备注查询订单", q.get("code") == 1 and q.get("orders"), q)
+    check("查询结果含卡密", bool((q.get("orders") or [{}])[0].get("cards")))
+
+    # ---------- 库存商品下单 ----------
+    r = c.post("/api/shop/order", json={
+        "token": token, "product_id": stock_product["id"], "qty": 1,
+        "contact": "buyer2@example.com",
+    })
+    d2 = r.get_json()
+    check("库存商品下单", d2.get("code") == 1, d2)
+    mark_paid(d2.get("trade_no"), detected_by="selftest")
+    o2 = c.get(f"/api/shop/order/{d2.get('order_no')}").get_json().get("order") or {}
+    check("库存卡密发货", o2.get("status") == "fulfilled"
+          and (o2.get("cards") or "").strip() != "", o2)
+
+    # ---------- 客服 ----------
+    r = c.post("/api/shop/feedback/start", json={"token": token, "contact": "tester@example.com"})
+    fb = r.get_json()
+    check("客服会话创建", fb.get("code") == 1 and fb.get("ticket"), fb)
+    ticket_id = (fb.get("ticket") or {}).get("id")
+    r = c.post("/api/shop/feedback/send", json={
+        "token": token, "contact": "tester@example.com", "content": "商品没有收到卡密",
+    })
+    check("用户发送消息", r.get_json().get("code") == 1)
+    r = c.post(f"/api/admin/feedback/tickets/{ticket_id}/reply", json={"content": "已为您补发"})
+    check("管理员回复", r.get_json().get("code") == 1)
+    r = c.post("/api/shop/feedback/pull", json={"token": token, "contact": "tester@example.com"})
+    msgs = r.get_json().get("messages") or []
+    check("用户拉取到回复", any(m.get("sender") == "admin" for m in msgs), msgs)
+
+    # ---------- 码支付协议 ----------
+    pid, key = payload["merchant_id"], payload["merchant_key"]
+
+    def sign(p):
+        s = "&".join(
+            f"{k}={p[k]}" for k in sorted(p)
+            if k not in IGNORED_SIGN_KEYS and str(p[k]) != ""
+        )
+        return hashlib.md5((s + key).encode()).hexdigest()
+
+    r = c.get("/api/codepay", query_string={"act": "query", "pid": pid, "key": key})
+    check("协议 query", r.get_json().get("code") == 1, r.get_json())
+
+    p = {"pid": pid, "type": "alipay", "out_trade_no": "EXT-0001",
+         "name": "外部订单", "money": "0.03", "format": "json"}
+    p["sign"] = sign(p)
+    p["act"] = "submit"
+    r = c.post("/api/codepay", data=p)
+    pr = r.get_json()
+    check("协议 submit 转账链接", pr.get("code") == 1
+          and str(pr.get("payment_url", "")).startswith("https://render.alipay.com")
+          and len(pr.get("qr_code") or "") > 100, pr)
+
+    r = c.get("/api/codepay", query_string={
+        "act": "order", "pid": pid, "key": key, "out_trade_no": "EXT-0001"})
+    check("协议 order 待支付", r.get_json().get("status") == 0, r.get_json())
+
+    bad = {"pid": pid, "type": "alipay", "out_trade_no": "EXT-0002",
+           "name": "坏签名", "money": "0.03", "sign": "deadbeef", "act": "submit"}
+    r = c.post("/api/codepay", data=bad)
+    check("协议拒绝错误签名", r.get_json().get("code") == -1, r.get_json())
+
+    n = {"out_trade_no": "EXT-0001", "trade_no": pr.get("trade_no"),
+         "trade_status": "TRADE_SUCCESS", "name": "外部订单", "money": "0.03"}
+    n["sign"] = sign(n)
+    r = c.post("/api/codepay", data=dict(n, act="notify"))
+    check("协议 notify", r.status_code == 200 and r.get_data(as_text=True) == "success", r.data)
+    r = c.get("/api/codepay", query_string={
+        "act": "order", "pid": pid, "key": key, "out_trade_no": "EXT-0001"})
+    check("notify 后已支付", r.get_json().get("status") == 1, r.get_json())
+
+    # ---------- 经营码模式 ----------
+    from PIL import Image as _Image
+
+    buf = io.BytesIO()
+    _Image.new("RGB", (64, 64), "white").save(buf, "PNG")
+    r = c.post("/api/admin/upload-qr",
+               data={"file": (io.BytesIO(buf.getvalue()), "qr.png")},
+               content_type="multipart/form-data")
+    up = r.get_json()
+    check("上传经营码", up.get("success") and up.get("path"), up)
+    uploaded_path = up.get("path")
+    check("二维码文件存在", bool(uploaded_path) and os.path.exists(uploaded_path))
+    r = c.get("/api/admin/qr-image", query_string={"path": uploaded_path})
+    check("二维码预览", r.status_code == 200 and r.mimetype == "image/png", r.status_code)
+
+    # 部分更新：只提交经营码相关字段，验证不会清空其他配置
+    r = c.post("/api/admin/pay-config", json={
+        "business_qr_mode": True, "qr_code_path": uploaded_path,
+        "amount_offset": 0.01, "match_tolerance": 300,
+    })
+    check("部分更新配置", r.get_json().get("success"))
+    cfg2 = c.get("/api/admin/pay-config").get_json()
+    check("增量保存不丢配置", cfg2.get("app_id") == payload["app_id"]
+          and cfg2.get("transfer_user_id") == payload["transfer_user_id"]
+          and cfg2.get("business_qr_mode") is True, cfg2)
+
+    p = {"pid": pid, "type": "alipay", "out_trade_no": "EXT-QR-1",
+         "name": "经营码订单", "money": "1.00", "format": "json"}
+    p["sign"] = sign(p)
+    p["act"] = "submit"
+    r1 = c.post("/api/codepay", data=p)
+    pr1 = r1.get_json()
+    check("经营码订单创建", pr1.get("code") == 1
+          and pr1.get("business_qr_mode") is True
+          and pr1.get("qr_code_url") == "/api/codepay/qrcode"
+          and len(pr1.get("qr_code") or "") > 100, pr1)
+
+    html = c.get(f"/pay/{pr1.get('trade_no')}").get_data(as_text=True)
+    check("经营码支付页显示二维码", "data:image/png;base64," in html and "精确金额" in html)
+    r = c.get("/api/codepay/qrcode")
+    check("经营码图片接口", r.status_code == 200 and r.mimetype == "image/png", r.status_code)
+
+    p2 = dict(p)
+    p2["out_trade_no"] = "EXT-QR-2"
+    p2.pop("sign", None)
+    p2["sign"] = sign(p2)
+    pr2 = c.post("/api/codepay", data=p2).get_json()
+    check("经营码金额唯一", pr2.get("code") == 1
+          and pr1.get("payment_amount") != pr2.get("payment_amount"),
+          (pr1.get("payment_amount"), pr2.get("payment_amount")))
+
+    # ---------- 后台接口 ----------
+    r = c.get("/api/admin/stats")
+    st = r.get_json()
+    check("后台统计", st.get("payment_ready") is True and st.get("pay", {}).get("total") >= 3, st)
+    r = c.get("/api/admin/shop-orders")
+    check("后台商城订单列表", r.status_code == 200 and r.get_json().get("total") == 2)
+    r = c.get("/api/admin/orders")
+    check("后台码支付订单列表", r.status_code == 200 and r.get_json().get("total") >= 4)
+    r = c.get("/api/admin/health")
+    h = r.get_json()
+    check("健康检查", r.status_code == 200 and h.get("config", {}).get("app_id") == "OK"
+          and h.get("payment_ready") is True, h.get("config"))
+
+    # ---------- 趋势 / 导出 / 文档 / 参数拼装 / 在线调试 ----------
+    r = c.get("/api/admin/stats/trend?days=7")
+    trend = r.get_json()
+    check("收入趋势", r.status_code == 200 and len(trend.get("items", [])) == 7)
+
+    r = c.get("/api/admin/orders/export")
+    csv_text = r.get_data(as_text=True)
+    check("码支付订单导出", r.status_code == 200 and "平台订单号" in csv_text
+          and "EXT-0001" in csv_text)
+
+    r = c.get("/api/admin/shop-orders/export")
+    check("商城订单导出", r.status_code == 200
+          and "tester@example.com" in r.get_data(as_text=True))
+
+    r = c.get("/admin/api-docs")
+    html = r.get_data(as_text=True)
+    check("接口文档页", r.status_code == 200 and "签名与认证" in html
+          and "参数拼装" in html and "在线调试" in html
+          and payload["merchant_id"] in html)
+    check("文档页无演示内容", "演示模式" not in html and "模拟支付" not in html)
+
+    r = c.get("/health")
+    check("安全响应头", r.headers.get("X-Content-Type-Options") == "nosniff")
+
+    r = c.post("/api/admin/api-sign", json={
+        "act": "submit",
+        "params": {"out_trade_no": "SIGN-1", "name": "签名测试", "money": "0.03"},
+    })
+    d = r.get_json()
+    form_str = d.get("form_string") or ""
+    check("参数拼装 submit", d.get("success") and form_str.startswith("act=submit&")
+          and "sign=" in form_str and '"sign"' in (d.get("json") or ""), d)
+
+    r = c.post("/api/admin/api-sign", json={"act": "order", "params": {"out_trade_no": "SIGN-1"}})
+    d = r.get_json()
+    check("参数拼装 order", d.get("success")
+          and "sign=" not in (d.get("form_string") or ""), d)
+
+    anon = app.test_client()
+    r = anon.post("/api/admin/api-sign", json={"act": "submit", "params": {}})
+    check("参数拼装需登录", r.status_code == 401, r.status_code)
+
+    r = c.post("/api/admin/api-try", json={"act": "health", "params": {}})
+    tr = r.get_json()
+    check("调试 health", tr.get("success") and tr.get("response", {}).get("payment_ready") is True,
+          tr)
+
+    r = c.post("/api/admin/api-try", json={"act": "query", "params": {}})
+    tr = r.get_json()
+    check("调试 query", tr.get("success") and tr.get("response", {}).get("code") == 1, tr)
+    check("调试返回耗时", isinstance(tr.get("meta", {}).get("elapsed_ms"), (int, float)), tr.get("meta"))
+
+    r = c.post("/api/admin/api-try", json={
+        "act": "submit", "params": {"out_trade_no": "TRY-0001", "name": "调试单", "money": "0.02"}})
+    tr = r.get_json()
+    check("调试 submit", tr.get("success") and tr.get("response", {}).get("code") == 1
+          and tr["response"].get("trade_no"), tr)
+
+    r = c.post("/api/admin/api-try", json={"act": "order", "params": {"out_trade_no": "TRY-0001"}})
+    check("调试 order 待支付", r.get_json().get("response", {}).get("status") == 0)
+
+    r = c.post("/api/admin/api-try", json={"act": "notify", "params": {"out_trade_no": "TRY-0001"}})
+    check("调试 notify", r.get_json().get("response", {}).get("code") == 1, r.get_json())
+    r = c.post("/api/admin/api-try", json={"act": "order", "params": {"out_trade_no": "TRY-0001"}})
+    check("调试后订单已支付", r.get_json().get("response", {}).get("status") == 1)
+
+    # ---------- 页面渲染 ----------
+    for path, needle in [("/", "自动生成商品"), ("/shop", "自动生成商品"),
+                         ("/orders", "订单查询"), ("/support", "联系客服")]:
+        r = c.get(path)
+        check(f"页面 {path}", r.status_code == 200 and needle in r.get_data(as_text=True),
+              r.status_code)
+
+    for path in ["/admin/", "/admin/pay-config", "/admin/orders", "/admin/products",
+                 "/admin/shop-orders", "/admin/feedback", "/admin/settings",
+                 "/admin/api-docs"]:
+        r = c.get(path)
+        check(f"后台页面 {path}", r.status_code == 200, r.status_code)
+
+    # ---------- 商城关闭 ----------
+    c.post("/api/admin/shop-settings", json={"enabled": False})
+    r = c.post("/api/shop/order", json={
+        "token": token, "product_id": gen_product["id"], "qty": 1, "contact": "x@example.com"})
+    check("商城关闭拦截", r.get_json().get("code") == -1, r.get_json())
+    c.post("/api/admin/shop-settings", json={"enabled": True})
+
+    # ---------- 登录失败限速（最后执行） ----------
+    for _ in range(5):
+        c.post("/admin/login", data={"username": "nobody", "password": "wrong"})
+    r = c.post("/admin/login", data={"username": "admin", "password": "admin123"})
+    check("登录失败限速", r.status_code == 200
+          and "尝试次数过多" in r.get_data(as_text=True))
+
+    print("\n结果: 通过 %d, 失败 %d" % (PASS, FAIL))
+    return 0 if FAIL == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

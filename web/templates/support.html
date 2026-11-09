@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}联系客服 - {{ settings.shop_title }}{% endblock %}
+{% block content %}
+<div class="query-box">
+  <div class="card page-card">
+    <h1 style="font-size:22px;">联系客服</h1>
+    <p class="muted small mt8">请先填写下单时使用的备注（邮箱 / QQ / 手机号）验证身份，再发送消息。</p>
+
+    <div class="row mt16">
+      <input id="contactInput" type="text" placeholder="下单备注" style="flex:1;min-width:220px;">
+      <button class="btn primary" id="startBtn">进入会话</button>
+    </div>
+
+    <div id="chatPanel" style="display:none;" class="mt16">
+      <div class="spread">
+        <span class="small muted">会话 #<span id="ticketId"></span> · <span id="ticketStatus"></span></span>
+        <button class="btn sm" id="refreshBtn">刷新</button>
+      </div>
+      <div class="ticket-messages" id="messages"></div>
+      <div class="row">
+        <input id="contentInput" type="text" placeholder="输入消息，回车发送" style="flex:1;min-width:200px;" maxlength="2000">
+        <button class="btn primary" id="sendBtn">发送</button>
+      </div>
+      <p class="small muted mt8">客服回复后会出现在会话中；关闭的会话无法继续发送消息。</p>
+    </div>
+    <div id="hint" class="mt16"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TOKEN = {{ token|tojson }};
+let contact = '';
+let timer = null;
+
+function esc(v) {
+  return String(v == null ? '' : v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+}
+function showHint(msg) {
+  document.getElementById('hint').innerHTML = `<div class="hint-box">${esc(msg)}</div>`;
+}
+
+function renderMessages(messages) {
+  const box = document.getElementById('messages');
+  box.innerHTML = (messages || []).map(m => `
+    <div class="msg ${m.sender === 'admin' ? 'admin' : 'user'}">
+      ${esc(m.content)}
+      <span class="time">${esc(m.created_at)}</span>
+    </div>`).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderTicket(data) {
+  document.getElementById('ticketId').textContent = data.ticket ? data.ticket.id : '';
+  document.getElementById('ticketStatus').textContent =
+    data.ticket ? ({open:'等待回复', replied:'已回复', closed:'已关闭'}[data.ticket.status] || data.ticket.status) : '';
+  renderMessages(data.messages);
+}
+
+async function call(path, payload) {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(Object.assign({ token: TOKEN, contact }, payload || {}))
+  });
+  return resp.json();
+}
+
+async function start() {
+  contact = document.getElementById('contactInput').value.trim();
+  if (contact.length < 4) { showHint('请填写完整备注（至少 4 个字符）'); return; }
+  const data = await call('/api/shop/feedback/start');
+  if (data.code !== 1) { showHint(data.msg || '无法进入会话'); return; }
+  document.getElementById('hint').innerHTML = '';
+  document.getElementById('chatPanel').style.display = 'block';
+  renderTicket(data);
+  if (timer) clearInterval(timer);
+  timer = setInterval(pull, 10000);
+}
+
+async function pull() {
+  if (!contact) return;
+  try {
+    const data = await call('/api/shop/feedback/pull');
+    if (data.code === 1) renderTicket(data);
+  } catch (e) {}
+}
+
+async function send() {
+  const input = document.getElementById('contentInput');
+  const content = input.value.trim();
+  if (!content) return;
+  const data = await call('/api/shop/feedback/send', { content });
+  if (data.code !== 1) { showHint(data.msg || '发送失败'); return; }
+  input.value = '';
+  renderTicket({ ticket: data.ticket, messages: [data.message] });
+  pull();
+}
+
+document.getElementById('startBtn').addEventListener('click', start);
+document.getElementById('refreshBtn').addEventListener('click', pull);
+document.getElementById('sendBtn').addEventListener('click', send);
+document.getElementById('contentInput').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+</script>
+{% endblock %}

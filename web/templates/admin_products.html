@@ -1,0 +1,353 @@
+{% extends "admin_base.html" %}
+{% block title %}商品管理 - 管理后台{% endblock %}
+{% block heading %}商品管理{% endblock %}
+{% block subheading %}商品信息、库存卡密与自动生成规则{% endblock %}
+{% block head_actions %}
+  <button class="btn primary" id="newProductBtn">新建商品</button>
+{% endblock %}
+
+{% block content %}
+<div class="card panel">
+  <div class="toolbar">
+    <input id="searchInput" type="text" placeholder="商品名称 / 描述">
+    <button class="btn" id="searchBtn">搜索</button>
+    <span class="small muted" id="totalText"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>商品</th><th>价格</th><th>发货方式</th><th>库存</th><th>已售</th><th>状态</th><th>排序</th><th style="width:220px;">操作</th></tr>
+      </thead>
+      <tbody id="productRows"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 商品编辑 -->
+<div class="modal-mask" id="productModal">
+  <div class="modal">
+    <h3 id="productModalTitle">新建商品</h3>
+    <input type="hidden" id="editProductId">
+    <label class="field"><span>商品名称</span><input id="p_name"></label>
+    <div class="grid-2">
+      <label class="field"><span>价格（元）</span><input id="p_price" type="number" step="0.01" min="0.01"></label>
+      <label class="field"><span>排序（越小越靠前）</span><input id="p_sort" type="number" value="0"></label>
+    </div>
+    <label class="field"><span>商品描述</span><textarea id="p_desc" rows="3"></textarea></label>
+    <div class="grid-2">
+      <label class="field"><span>发货方式</span>
+        <select id="p_mode">
+          <option value="stock">库存卡密</option>
+          <option value="generate">下单自动生成</option>
+        </select>
+      </label>
+      <label class="field"><span>上架状态</span>
+        <select id="p_status"><option value="1">上架</option><option value="0">下架</option></select>
+      </label>
+    </div>
+    <div id="genConfigBox" style="display:none;">
+      <p class="small muted" style="margin-bottom:8px;">自动生成规则（每份订单生成 quantity 条卡密）</p>
+      <div class="grid-2">
+        <label class="field"><span>前缀</span><input id="g_prefix" placeholder="例如 VIP-"></label>
+        <label class="field"><span>长度</span><input id="g_length" type="number" value="16" min="4" max="64"></label>
+        <label class="field"><span>字符集</span>
+          <select id="g_charset">
+            <option value="hex">HEX（0-9A-F）</option>
+            <option value="digits">纯数字</option>
+            <option value="upper">大写+数字</option>
+            <option value="alnum">大小写+数字</option>
+          </select>
+        </label>
+        <label class="field"><span>每份数量</span><input id="g_quantity" type="number" value="1" min="1" max="20"></label>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal('productModal')">取消</button>
+      <button class="btn primary" id="saveProductBtn">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 卡密管理 -->
+<div class="modal-mask" id="cardsModal">
+  <div class="modal" style="width:min(880px,100%);">
+    <div class="spread">
+      <h3 id="cardsTitle">卡密管理</h3>
+      <span class="badge green" id="stockBadge">库存 0</span>
+    </div>
+
+    <label class="field"><span>批量导入卡密（每行一条，重复自动跳过）</span>
+      <textarea id="importText" rows="5" placeholder="CARD-0001&#10;CARD-0002"></textarea>
+    </label>
+    <button class="btn" id="importBtn">导入</button>
+
+    <div class="toolbar" style="margin-top:18px;">
+      <select id="cardStatusFilter">
+        <option value="">全部</option>
+        <option value="available">可用</option>
+        <option value="sold">已售出</option>
+        <option value="disabled">已禁用</option>
+      </select>
+      <input id="cardSearch" type="text" placeholder="卡密 / 订单号">
+      <button class="btn" id="cardSearchBtn">搜索</button>
+      <button class="btn" id="batchDisable">批量禁用选中</button>
+      <button class="btn danger" id="batchDelete">批量删除选中</button>
+    </div>
+    <div class="table-wrap" style="max-height:320px;overflow-y:auto;">
+      <table>
+        <thead><tr>
+          <th style="width:34px;"><input type="checkbox" id="checkAll" style="width:auto;"></th>
+          <th>ID</th><th>卡密</th><th>状态</th><th>售出订单</th><th>时间</th><th style="width:150px;">操作</th>
+        </tr></thead>
+        <tbody id="cardRows"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="closeModal('cardsModal')">关闭</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let editingId = null;
+let currentProductId = null;
+
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function updateGenBox() {
+  const isGen = document.getElementById('p_mode').value === 'generate';
+  document.getElementById('genConfigBox').style.display = isGen ? 'block' : 'none';
+}
+
+async function loadProducts() {
+  const search = document.getElementById('searchInput').value.trim();
+  const params = new URLSearchParams({ page: 1, page_size: 100 });
+  if (search) params.set('search', search);
+  try {
+    const data = await api('/api/admin/products?' + params.toString());
+    const list = data.products || [];
+    document.getElementById('totalText').textContent = `共 ${data.total || 0} 个商品`;
+    if (!list.length) {
+      document.getElementById('productRows').innerHTML = '<tr><td colspan="9" class="empty">暂无商品</td></tr>';
+      return;
+    }
+    document.getElementById('productRows').innerHTML = list.map(p => `
+      <tr>
+        <td>${p.id}</td>
+        <td>
+          <div style="font-weight:600;">${esc(p.name)}</div>
+          <div class="small muted" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.description || '')}</div>
+        </td>
+        <td>¥${fmtMoney(p.price)}</td>
+        <td>${p.fulfill_mode === 'generate' ? '自动生成' : '库存卡密'}</td>
+        <td>${p.fulfill_mode === 'generate' ? '<span class="muted">不限</span>' : p.stock_count}</td>
+        <td>${p.sold_count}</td>
+        <td>${p.status ? '<span class="badge green">上架</span>' : '<span class="badge">下架</span>'}</td>
+        <td>${p.sort_order}</td>
+        <td>
+          <button class="btn sm" onclick="editProduct(${p.id})">编辑</button>
+          <button class="btn sm" onclick="manageCards(${p.id}, '${esc(p.name)}')">卡密</button>
+          <button class="btn sm danger" onclick="deleteProduct(${p.id})">删除</button>
+        </td>
+      </tr>`).join('');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function openNewProduct() {
+  editingId = null;
+  document.getElementById('productModalTitle').textContent = '新建商品';
+  document.getElementById('editProductId').value = '';
+  document.getElementById('p_name').value = '';
+  document.getElementById('p_price').value = '';
+  document.getElementById('p_desc').value = '';
+  document.getElementById('p_mode').value = 'stock';
+  document.getElementById('p_status').value = '1';
+  document.getElementById('p_sort').value = '0';
+  document.getElementById('g_prefix').value = '';
+  document.getElementById('g_length').value = '16';
+  document.getElementById('g_charset').value = 'hex';
+  document.getElementById('g_quantity').value = '1';
+  updateGenBox();
+  openModal('productModal');
+}
+
+async function editProduct(id) {
+  try {
+    const data = await api('/api/admin/products/' + id);
+    const p = data.product;
+    editingId = id;
+    document.getElementById('productModalTitle').textContent = '编辑商品 #' + id;
+    document.getElementById('editProductId').value = id;
+    document.getElementById('p_name').value = p.name || '';
+    document.getElementById('p_price').value = p.price;
+    document.getElementById('p_desc').value = p.description || '';
+    document.getElementById('p_mode').value = p.fulfill_mode || 'stock';
+    document.getElementById('p_status').value = String(p.status);
+    document.getElementById('p_sort').value = p.sort_order || 0;
+    const g = p.generate_config || {};
+    document.getElementById('g_prefix').value = g.prefix || '';
+    document.getElementById('g_length').value = g.length || 16;
+    document.getElementById('g_charset').value = g.charset || 'hex';
+    document.getElementById('g_quantity').value = g.quantity || 1;
+    updateGenBox();
+    openModal('productModal');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function saveProduct() {
+  const name = document.getElementById('p_name').value.trim();
+  const price = parseFloat(document.getElementById('p_price').value);
+  if (!name) { toast('请填写商品名称', 'error'); return; }
+  if (!(price >= 0.01)) { toast('价格至少 0.01', 'error'); return; }
+  const mode = document.getElementById('p_mode').value;
+  const payload = {
+    name,
+    price,
+    description: document.getElementById('p_desc').value,
+    fulfill_mode: mode,
+    status: parseInt(document.getElementById('p_status').value, 10),
+    sort_order: parseInt(document.getElementById('p_sort').value || '0', 10),
+    generate_config: mode === 'generate' ? {
+      prefix: document.getElementById('g_prefix').value.trim(),
+      length: parseInt(document.getElementById('g_length').value || '16', 10),
+      charset: document.getElementById('g_charset').value,
+      quantity: parseInt(document.getElementById('g_quantity').value || '1', 10),
+    } : {},
+  };
+  try {
+    if (editingId) {
+      await api('/api/admin/products/' + editingId, { method: 'PUT', body: payload });
+    } else {
+      await api('/api/admin/products', { method: 'POST', body: payload });
+    }
+    toast('商品已保存', 'success');
+    closeModal('productModal');
+    loadProducts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteProduct(id) {
+  if (!confirm('删除商品会同时删除其所有卡密，确认删除？')) return;
+  try {
+    await api('/api/admin/products/' + id, { method: 'DELETE' });
+    toast('已删除', 'success');
+    loadProducts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ---------- 卡密 ---------- */
+async function manageCards(productId, name) {
+  currentProductId = productId;
+  document.getElementById('cardsTitle').textContent = '卡密管理 · ' + name;
+  document.getElementById('importText').value = '';
+  document.getElementById('cardStatusFilter').value = '';
+  document.getElementById('cardSearch').value = '';
+  openModal('cardsModal');
+  await loadCards();
+}
+
+async function loadCards() {
+  if (!currentProductId) return;
+  const params = new URLSearchParams({ page: 1, page_size: 100 });
+  const status = document.getElementById('cardStatusFilter').value;
+  const search = document.getElementById('cardSearch').value.trim();
+  if (status) params.set('status', status);
+  if (search) params.set('search', search);
+  try {
+    const data = await api(`/api/admin/products/${currentProductId}/cards?` + params.toString());
+    const list = data.cards || [];
+    document.getElementById('stockBadge').textContent = `共 ${data.total || 0} 条`;
+    if (!list.length) {
+      document.getElementById('cardRows').innerHTML = '<tr><td colspan="7" class="empty">暂无卡密</td></tr>';
+      return;
+    }
+    document.getElementById('cardRows').innerHTML = list.map(c => `
+      <tr>
+        <td><input type="checkbox" class="card-check" value="${c.id}" style="width:auto;"></td>
+        <td>${c.id}</td>
+        <td class="mono">${esc(c.code)}</td>
+        <td>${({available:'<span class="badge green">可用</span>', sold:'<span class="badge blue">已售出</span>', disabled:'<span class="badge red">已禁用</span>'})[c.status] || esc(c.status)}</td>
+        <td class="small">${esc(c.sold_order_no || '-')}</td>
+        <td class="small">${esc(c.sold_at || c.created_at || '')}</td>
+        <td>
+          ${c.status === 'available' ? `<button class="btn sm" onclick="cardStatus(${c.id}, 'disabled')">禁用</button>` : ''}
+          ${c.status === 'disabled' ? `<button class="btn sm success" onclick="cardStatus(${c.id}, 'available')">启用</button>` : ''}
+          ${c.status !== 'sold' ? `<button class="btn sm danger" onclick="cardDelete(${c.id})">删除</button>` : ''}
+        </td>
+      </tr>`).join('');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function importCards() {
+  const text = document.getElementById('importText').value;
+  if (!text.trim()) { toast('请粘贴卡密', 'error'); return; }
+  try {
+    const r = await api(`/api/admin/products/${currentProductId}/cards/import`, {
+      method: 'POST', body: { text }
+    });
+    toast(`导入成功 ${r.imported} 条，跳过 ${r.skipped} 条`, 'success');
+    document.getElementById('importText').value = '';
+    loadCards();
+    loadProducts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function cardStatus(id, status) {
+  try {
+    await api(`/api/admin/cards/${id}/status`, { method: 'POST', body: { status } });
+    loadCards();
+    loadProducts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function cardDelete(id) {
+  if (!confirm('确认删除该卡密？')) return;
+  try {
+    await api('/api/admin/cards/' + id, { method: 'DELETE' });
+    loadCards();
+    loadProducts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function checkedIds() {
+  return Array.from(document.querySelectorAll('.card-check:checked')).map(el => parseInt(el.value, 10));
+}
+
+async function batch(action) {
+  const ids = checkedIds();
+  if (!ids.length) { toast('请先勾选卡密', 'error'); return; }
+  if (action === 'delete' && !confirm(`确认删除选中的 ${ids.length} 条卡密？`)) return;
+  try {
+    const r = await api(`/api/admin/products/${currentProductId}/cards/batch`, {
+      method: 'POST', body: { action, ids }
+    });
+    toast(`操作完成：成功 ${r.affected} 条，跳过 ${r.skipped} 条`, 'success');
+    loadCards();
+    loadProducts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.getElementById('newProductBtn').addEventListener('click', openNewProduct);
+document.getElementById('saveProductBtn').addEventListener('click', saveProduct);
+document.getElementById('p_mode').addEventListener('change', updateGenBox);
+document.getElementById('searchBtn').addEventListener('click', loadProducts);
+document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') loadProducts(); });
+document.getElementById('importBtn').addEventListener('click', importCards);
+document.getElementById('cardStatusFilter').addEventListener('change', loadCards);
+document.getElementById('cardSearchBtn').addEventListener('click', loadCards);
+document.getElementById('cardSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadCards(); });
+document.getElementById('batchDisable').addEventListener('click', () => batch('disable'));
+document.getElementById('batchDelete').addEventListener('click', () => batch('delete'));
+document.getElementById('checkAll').addEventListener('change', e => {
+  document.querySelectorAll('.card-check').forEach(el => { el.checked = e.target.checked; });
+});
+document.querySelectorAll('.modal-mask').forEach(mask => {
+  mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('show'); });
+});
+
+loadProducts();
+</script>
+{% endblock %}

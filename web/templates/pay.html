@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}收银台 - 在线支付{% endblock %}
+{% block content %}
+<div class="pay-wrap">
+  <div class="card pay-card">
+    <div class="title">{{ payment.name }}</div>
+    <div class="amount">{{ payment.payment_amount }}</div>
+    <div class="small muted">
+      订单号 <span class="mono" id="orderNoText">{{ shop_order.order_no if shop_order else payment.out_trade_no }}</span>
+      <button class="copy-btn" onclick="copyOrderNo()">复制</button>
+    </div>
+
+    {% if payment.qr_code %}
+      <div class="pay-qr"><img src="data:image/png;base64,{{ payment.qr_code }}" alt="支付二维码"></div>
+    {% elif payment.qr_code_url %}
+      <div class="pay-qr"><img src="{{ payment.qr_code_url }}" alt="经营码二维码"></div>
+    {% endif %}
+
+    <div id="statusBox" class="pay-status {% if payment.status == 1 %}paid{% elif payment.status == 2 %}timeout{% else %}pending{% endif %}">
+      {% if payment.status == 1 %}
+        ✓ 支付成功
+      {% elif payment.status == 2 %}
+        订单已过期
+      {% else %}
+        <span class="spinner"></span> 等待支付...
+      {% endif %}
+    </div>
+    <div id="countdown" class="countdown"></div>
+
+    <div id="resultBox" style="display:none;" class="mt16">
+      <a class="btn" id="orderLink" href="#">查看订单详情</a>
+      <div class="cards-box" id="cardsBox" style="display:none;">
+        <div class="small muted" style="margin-bottom:6px;">卡密 / 发货内容</div>
+        <pre id="cardsText"></pre>
+      </div>
+    </div>
+
+    <ul class="tips" id="payTips">
+      {% if payment.payment_amount != payment.money %}
+      <li style="color:#b45309;">订单金额有调整，请务必支付 <b>{{ payment.payment_amount }}</b> 元</li>
+      {% endif %}
+      {% if payment.business_qr_mode %}
+      <li>请使用支付宝扫描二维码，支付精确金额</li>
+      {% else %}
+      <li>请使用支付宝扫码打开转账页，备注会自动填写订单号</li>
+      {% endif %}
+      <li>支付完成后页面会自动更新</li>
+      <li>请保存订单号，便于后续查询</li>
+    </ul>
+    {% if payment.payment_instruction %}
+      <p class="small muted mt8" id="payInstruction">{{ payment.payment_instruction }}</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TRADE_NO = {{ payment.trade_no|tojson }};
+const INIT_STATUS = {{ payment.status|tojson }};
+let remaining = {{ remaining|default(0) }};
+let finished = INIT_STATUS !== 0;
+
+const statusBox = document.getElementById('statusBox');
+const countdown = document.getElementById('countdown');
+const resultBox = document.getElementById('resultBox');
+
+function copyOrderNo() {
+  const text = document.getElementById('orderNoText').textContent.trim();
+  const done = () => {
+    const btn = document.querySelector('.copy-btn');
+    if (btn) { btn.textContent = '已复制'; setTimeout(() => btn.textContent = '复制', 1500); }
+  };
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(done).catch(fallbackCopy);
+  } else { fallbackCopy(); }
+  function fallbackCopy() {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) {}
+    ta.remove();
+  }
+}
+
+function setStatus(cls, html) {
+  statusBox.className = 'pay-status ' + cls;
+  statusBox.innerHTML = html;
+}
+
+function showPaid(detail) {
+  finished = true;
+  setStatus('paid', '✓ 支付成功');
+  countdown.textContent = '';
+  const instruction = document.getElementById('payInstruction');
+  if (instruction) instruction.style.display = 'none';
+  const tips = document.getElementById('payTips');
+  if (tips) tips.style.display = 'none';
+  const qr = document.querySelector('.pay-qr');
+  if (qr) qr.style.display = 'none';
+  resultBox.style.display = 'block';
+  if (detail && detail.shop_order_no) {
+    const link = document.getElementById('orderLink');
+    link.href = '/orders?order_no=' + encodeURIComponent(detail.shop_order_no);
+    link.textContent = '查看订单与卡密（' + detail.shop_order_no + '）';
+  } else {
+    document.getElementById('orderLink').href = '/orders';
+    document.getElementById('orderLink').textContent = '查询订单';
+  }
+  if (detail && detail.shop_cards) {
+    document.getElementById('cardsBox').style.display = 'block';
+    document.getElementById('cardsText').textContent = detail.shop_cards;
+  }
+}
+
+function showTimeout() {
+  finished = true;
+  setStatus('timeout', '订单已过期');
+  countdown.textContent = '请重新下单，或联系客服';
+}
+
+async function poll() {
+  if (finished) return;
+  try {
+    const resp = await fetch('/api/pay/status/' + encodeURIComponent(TRADE_NO));
+    const data = await resp.json();
+    if (data.status === 1) { showPaid(data); return; }
+    if (data.status === 2) { showTimeout(); return; }
+  } catch (e) { /* 网络抖动忽略 */ }
+}
+
+function tick() {
+  if (finished) return;
+  if (remaining > 0) {
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    countdown.textContent = `剩余支付时间 ${m}:${String(s).padStart(2, '0')}`;
+    remaining -= 1;
+  } else {
+    countdown.textContent = '等待系统确认支付状态';
+  }
+}
+
+if (!finished) {
+  poll();
+  setInterval(tick, 1000);
+  setInterval(poll, 3000);
+  tick();
+} else if (INIT_STATUS === 1) {
+  showPaid(null);
+}
+</script>
+{% endblock %}

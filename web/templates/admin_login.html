@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>管理员登录</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="login-page">
+  <form class="card login-card" method="post" id="loginForm">
+    <h1>码支付管理后台</h1>
+    <p class="sub">支付宝码支付 · 卡密商城</p>
+    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <label class="field"><span>管理员账号</span>
+      <input id="loginUser" type="text" name="username" autocomplete="username" required autofocus>
+    </label>
+    <label class="field"><span>密码</span>
+      <input id="loginPass" type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <label class="switch" style="margin:-4px 0 16px;">
+      <input type="checkbox" id="rememberMe">
+      <span>记住账号密码（仅限个人设备）</span>
+    </label>
+    <button class="btn primary" type="submit" style="width:100%;padding:11px;">登录</button>
+    <p class="small muted mt16" style="text-align:center;">首次登录：admin / admin123（登录后请立即修改）</p>
+    <p class="small muted" style="text-align:center;margin-top:6px;">勾选后账号密码仅保存在本机浏览器，请勿在公共电脑使用</p>
+  </form>
+</div>
+<script>
+(function () {
+  var KEY = 'alipay.admin.remember';
+  var user = document.getElementById('loginUser');
+  var pass = document.getElementById('loginPass');
+  var remember = document.getElementById('rememberMe');
+  var form = document.getElementById('loginForm');
+
+  function enc(s) { return btoa(unescape(encodeURIComponent(s))); }
+  function dec(s) { return decodeURIComponent(escape(atob(s))); }
+
+  try {
+    var raw = localStorage.getItem(KEY);
+    if (raw) {
+      var data = JSON.parse(dec(raw));
+      if (data.u) user.value = data.u;
+      if (data.p) pass.value = data.p;
+      remember.checked = true;
+    }
+  } catch (e) { /* 忽略损坏的本地数据 */ }
+
+  form.addEventListener('submit', function () {
+    try {
+      if (remember.checked) {
+        localStorage.setItem(KEY, enc(JSON.stringify({ u: user.value, p: pass.value })));
+      } else {
+        localStorage.removeItem(KEY);
+      }
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+  });
+
+  remember.addEventListener('change', function () {
+    if (!remember.checked) {
+      try { localStorage.removeItem(KEY); } catch (e) {}
+    }
+  });
+})();
+</script>
+</div>
+</body>
+</html>

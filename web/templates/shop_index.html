@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ settings.shop_title }} - 商城{% endblock %}
+{% block content %}
+<div class="container">
+  <section class="hero">
+    <h1>{{ settings.shop_title }}<span class="accent"> · 即买即发</span></h1>
+    <p>选购商品 → 扫码支付 → 自动发货。订单与卡密可通过订单号或下单备注随时查询。</p>
+    {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
+  </section>
+
+  {% if maintenance %}
+    <div class="card page-card">
+      <div class="empty">
+        <div style="font-size:40px;margin-bottom:12px;">🔧</div>
+        <p>商城正在维护</p>
+        <p class="small muted mt8">{{ notice }}</p>
+      </div>
+    </div>
+  {% elif not products %}
+    <div class="card page-card">
+      <div class="empty">暂无在售商品，请稍后再来看看。</div>
+    </div>
+  {% else %}
+    <div class="product-grid">
+      {% for p in products %}
+      <a class="card product-card" href="/shop/p/{{ p.id }}">
+        <div class="spread">
+          <h3>{{ p.name }}</h3>
+          {% if p.fulfill_mode == 'generate' %}
+            <span class="badge purple">自动生成</span>
+          {% elif p.stock_count > 0 %}
+            <span class="badge green">有货</span>
+          {% else %}
+            <span class="badge red">缺货</span>
+          {% endif %}
+        </div>
+        <div class="desc">{{ p.description or '暂无商品描述' }}</div>
+        <div class="spread">
+          <span class="price">{{ '%.2f'|format(p.price) }}</span>
+          <span class="small muted nowrap">已售 {{ p.sold_count }}</span>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
