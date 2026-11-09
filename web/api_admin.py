@@ -7,7 +7,6 @@ import io
 import json
 import os
 import time
-import uuid
 
 from flask import (Blueprint, Response, jsonify, render_template, request,
                    send_file, session)
@@ -18,19 +17,24 @@ from alipay_pay.orders import OrderStore
 from alipay_pay.protocol import generate_sign
 from config import BASE_DIR, DATA_DIR
 from core import mailer
+from core.html_utils import clean_description
+from core.images import save_image_bytes
 from core.reports import pay_orders_for_export, revenue_trend, shop_orders_for_export
 from core.settings import (
     change_admin_password,
     ensure_business_qr_dir,
     gen_merchant_credentials,
+    get_mcp_settings,
     is_configured,
     load_alipay_config,
     load_email_config,
     load_shop_settings,
     payment_readiness,
+    reset_mcp_token,
     save_alipay_config,
     save_email_config,
     save_shop_settings,
+    set_mcp_enabled,
     EMAIL_PRESETS,
 )
 from core.storage import db
@@ -39,37 +43,6 @@ from web.auth import login_required
 from web.helpers import fail, int_arg, json_body, ok
 
 bp = Blueprint("admin", __name__)
-
-ALLOWED_DESC_TAGS = [
-    "p", "br", "strong", "b", "em", "i", "u", "h3", "h4",
-    "ul", "ol", "li", "blockquote", "a", "img", "span",
-]
-ALLOWED_DESC_ATTRS = {
-    "a": ["href", "title", "target", "rel"],
-    "img": ["src", "alt", "width", "height"],
-}
-
-
-def clean_description(value: str) -> str:
-    """清洗商品富文本描述，保留常用排版与图片。"""
-    raw = str(value or "")
-    if not raw.strip():
-        return ""
-    try:
-        import bleach
-
-        cleaned = bleach.clean(
-            raw,
-            tags=ALLOWED_DESC_TAGS,
-            attributes=ALLOWED_DESC_ATTRS,
-            protocols=["http", "https"],
-            strip=True,
-        )
-    except ImportError:
-        import html
-
-        cleaned = html.escape(raw)
-    return cleaned[:20000]
 
 
 # ---------------- 页面 ----------------
@@ -656,23 +629,8 @@ def admin_shop_orders_batch():
 
 
 def _shop_mark_paid(svc: ShopService, order_no: str) -> dict:
-    """商城订单补单：未支付的支付单先标记支付，否则直接补发。"""
-    order = svc.db.get_order_by_no(order_no)
-    if not order:
-        return {"ok": False, "reason": "订单不存在"}
-    if order.get("status") not in ("pending", "failed", "paid"):
-        return {"ok": False, "reason": f"当前状态不可补单: {order.get('status')}"}
-
-    store = OrderStore()
-    pay_order = store.get_order(out_trade_no=order.get("payment_out_trade_no"))
-    if pay_order and pay_order["status"] == 0:
-        mark_paid(pay_order["id"], detected_by="admin")
-    else:
-        result = svc.fulfill_order(order, notify=True)
-        if result.get("code") != 1 and result.get("msg") != "ALREADY_FULFILLED":
-            return {"ok": False, "reason": result.get("msg", "发货失败")}
-    fresh = svc.db.get_order_by_no(order_no)
-    return {"ok": True, "order": svc.public_order_view(fresh)}
+    """商城订单补单（复用 ShopService 逻辑）。"""
+    return svc.mark_paid_by_order_no(order_no)
 
 
 @bp.route("/api/admin/products/batch", methods=["POST"])
@@ -785,28 +743,10 @@ def upload_image():
     f = request.files.get("file")
     if not f or not f.filename:
         return fail("未选择文件")
-    raw = f.read()
-    if len(raw) > 8 * 1024 * 1024:
-        return fail("图片不能超过 8MB")
-    try:
-        from PIL import Image
-
-        img = Image.open(io.BytesIO(raw))
-        img.verify()
-        fmt = (img.format or "").upper()
-    except Exception:
-        return fail("文件不是有效的图片")
-    ext = {"PNG": ".png", "JPEG": ".jpg", "JPG": ".jpg", "GIF": ".gif",
-           "WEBP": ".webp", "BMP": ".bmp"}.get(fmt)
-    if not ext:
-        return fail("不支持的图片格式")
-
-    upload_dir = os.path.join(DATA_DIR, "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    with open(os.path.join(upload_dir, filename), "wb") as out:
-        out.write(raw)
-    return ok(url=f"/uploads/{filename}", filename=filename)
+    result, error = save_image_bytes(f.read())
+    if error:
+        return fail(error)
+    return ok(url=result["url"], filename=result["filename"])
 
 
 @bp.route("/api/admin/email-config", methods=["GET", "POST"])
@@ -832,6 +772,36 @@ def admin_email_test():
     if ok_flag:
         return ok(message="测试邮件已发送")
     return fail(f"发送失败: {error}")
+
+
+@bp.route("/api/admin/mcp-info")
+@login_required
+def admin_mcp_info():
+    from web.mcp_server import RESOURCES, TOOLS
+
+    cfg = get_mcp_settings()
+    return ok(
+        enabled=cfg["enabled"],
+        token=cfg["token"],
+        url=request.host_url.rstrip("/") + "/mcp",
+        tools=len(TOOLS),
+        resources=len(RESOURCES),
+    )
+
+
+@bp.route("/api/admin/mcp-token/reset", methods=["POST"])
+@login_required
+def admin_mcp_token_reset():
+    cfg = reset_mcp_token()
+    return ok(enabled=cfg["enabled"], token=cfg["token"], message="MCP Token 已重置")
+
+
+@bp.route("/api/admin/mcp-enabled", methods=["POST"])
+@login_required
+def admin_mcp_enable():
+    data = json_body()
+    cfg = set_mcp_enabled(bool(data.get("enabled")))
+    return ok(enabled=cfg["enabled"])
 
 
 @bp.route("/api/admin/password", methods=["POST"])

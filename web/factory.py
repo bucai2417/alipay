@@ -79,12 +79,13 @@ def create_app() -> Flask:
         text = re.sub(r"<[^>]+>", " ", str(value or ""))
         return re.sub(r"\s+", " ", html.unescape(text)).strip()
 
-    from web import api_admin, api_codepay, api_shop, auth
+    from web import api_admin, api_codepay, api_shop, auth, mcp_server
 
     app.register_blueprint(auth.bp)
     app.register_blueprint(api_codepay.bp)
     app.register_blueprint(api_shop.bp)
     app.register_blueprint(api_admin.bp)
+    app.register_blueprint(mcp_server.mcp_bp)
 
     # 初始化默认后台账号
     from core.settings import get_admin_auth

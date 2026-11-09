@@ -201,6 +201,48 @@ python tools/ui_smoke.py http://127.0.0.1:5000
 
 ---
 
+## MCP 服务（Agent 接入）
+
+内置 MCP 服务，与 Web 同端口，路径 `/mcp`，使用 Bearer Token 鉴权。后台「系统设置 → MCP 服务」可查看/复制 Token、启停与重置。
+
+- 接入地址：`http://<host>:5000/mcp`
+- 鉴权：`Authorization: Bearer <token>`（也支持 `X-MCP-Token`）
+- 传输：Streamable HTTP（JSON-RPC 2.0，无状态）
+- 资源：`alipay://readme`、`alipay://api-docs`、`alipay://stats`
+
+### 客户端配置
+
+Claud Code：
+```bash
+Claud mcp add --transport http alipay-pay http://<host>:5000/mcp --header "Authorization: Bearer <token>"
+```
+
+Cursor / 通用 MCP JSON：
+```json
+{
+  "mcpServers": {
+    "alipay-pay": {
+      "type": "http",
+      "url": "http://<host>:5000/mcp",
+      "headers": {"Authorization": "Bearer <token>"}
+    }
+  }
+}
+```
+
+### 工具（40 个）
+
+- 概览：`get_stats`、`get_health`、`get_monitor_status`、`run_monitor`
+- 商品/卡密：`list_products`、`get_product`、`create_product`、`update_product`、`delete_products`、`set_products_status`、`list_cards`、`import_cards`、`set_card_status`、`delete_cards`、`upload_image`
+- 码支付订单：`list_orders`、`get_order`、`mark_order_paid`（补单）、`expire_orders`、`delete_orders`、`resend_notify`
+- 商城订单：`list_shop_orders`、`get_shop_order`、`mark_shop_order_paid`（补单）、`refulfill_shop_order`、`delete_shop_orders`、`export_shop_orders_csv`
+- 客服：`list_tickets`、`get_ticket`、`reply_ticket`、`set_ticket_status`、`delete_tickets`
+- 配置：`get_pay_config`、`update_pay_config`、`generate_merchant`、`get_email_config`、`update_email_config`、`test_email`、`get_shop_settings`、`update_shop_settings`
+
+敏感字段（私钥、商户密钥、邮件密码、推送 token）读取时掩码；修改时只有传入非空值才覆盖。补单、删除、配置修改等工具会作用于真实数据，请只把 Token 交给可信的 Agent。
+
+---
+
 ## 性能与并发
 
 - Web 服务默认使用 **waitress（16 线程）**，非 debug 启动不再使用 Flask 开发服务器；可用 `python app.py` 或 `waitress-serve --threads=16 wsgi:app`。

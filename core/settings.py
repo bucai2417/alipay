@@ -326,6 +326,42 @@ def save_email_config(patch: dict) -> dict:
     return load_email_config()
 
 
+# ---------- MCP 服务 ----------
+MCP_KEY = "mcp_settings"
+DEFAULT_MCP_CONFIG = {"enabled": True, "token": ""}
+
+
+def get_mcp_settings() -> dict:
+    cfg = _get_raw(MCP_KEY, DEFAULT_MCP_CONFIG)
+    enabled = _bool(cfg.get("enabled"), True)
+    token = cfg.get("token") or ""
+    if is_encrypted(token):
+        token = decrypt_value(token)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        db.settings_set(MCP_KEY, {"enabled": enabled, "token": encrypt_value(token)})
+    return {"enabled": enabled, "token": token}
+
+
+def set_mcp_enabled(enabled: bool) -> dict:
+    cfg = get_mcp_settings()
+    db.settings_set(MCP_KEY, {
+        "enabled": bool(enabled),
+        "token": encrypt_value(cfg["token"]),
+    })
+    return {"enabled": bool(enabled), "token": cfg["token"]}
+
+
+def reset_mcp_token() -> dict:
+    cfg = get_mcp_settings()
+    token = secrets.token_urlsafe(32)
+    db.settings_set(MCP_KEY, {
+        "enabled": cfg["enabled"],
+        "token": encrypt_value(token),
+    })
+    return {"enabled": cfg["enabled"], "token": token}
+
+
 # ---------- 后台账号 ----------
 def _default_admin() -> dict:
     return {"username": "admin", "password_hash": generate_password_hash("admin123")}

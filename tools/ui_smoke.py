@@ -241,6 +241,13 @@ def main():
         assert page.locator("#email_enabled").count() == 1, "设置页缺少邮件开关"
         assert page.locator("#email_preset").count() == 1, "设置页缺少邮箱服务商"
         assert page.locator("#testEmailBtn").count() == 1, "设置页缺少测试邮件按钮"
+        assert page.locator("#mcp_enabled").count() == 1, "设置页缺少 MCP 开关"
+        assert page.locator("#mcp_url").count() == 1, "设置页缺少 MCP 地址"
+        assert page.locator("#mcp_token").count() == 1, "设置页缺少 MCP Token"
+        page.wait_for_function(
+            "document.getElementById('mcp_url').textContent.includes('/mcp')",
+            timeout=10000,
+        )
 
         page.goto(BASE + "/admin/products", wait_until="networkidle")
         page.click("#newProductBtn")

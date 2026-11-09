@@ -71,6 +71,40 @@
     <button class="btn" id="testEmailBtn">发送测试邮件</button>
   </div>
 </div>
+
+<div class="card panel mt16">
+  <div class="spread">
+    <h2 style="margin:0;">MCP 服务（Agent 接入）</h2>
+    <label class="switch"><input type="checkbox" id="mcp_enabled"><span>启用</span></label>
+  </div>
+  <p class="small muted" style="margin-top:8px;">
+    与 Web 同端口，路径 <span class="mono">/mcp</span>，使用 Bearer Token 鉴权。
+    启用后 AI Agent 可通过 MCP 管理商品、卡密、订单、补单、回调、配置与客服工单。
+  </p>
+  <div class="grid-2 mt8">
+    <label class="field"><span>接入地址</span>
+      <div class="copy-inline">
+        <code id="mcp_url">-</code>
+        <button type="button" class="copy-btn" id="mcp_copy_url">复制</button>
+      </div>
+    </label>
+    <label class="field"><span>Token</span>
+      <div class="copy-inline">
+        <code id="mcp_token" style="word-break:break-all;">-</code>
+        <button type="button" class="copy-btn" id="mcp_copy_token">复制</button>
+      </div>
+    </label>
+  </div>
+  <p class="small muted" id="mcp_meta"></p>
+  <div class="row">
+    <button class="btn" id="mcp_reset_token">重置 Token</button>
+    <span class="small muted">重置后旧 Token 立即失效</span>
+  </div>
+  <details class="mt16">
+    <summary class="small" style="cursor:pointer;">客户端配置示例</summary>
+    <pre class="code-block" style="margin-top:8px;" id="mcp_example"></pre>
+  </details>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -216,5 +250,55 @@ async function testEmail() {
 document.getElementById('saveEmailBtn').addEventListener('click', saveEmailConfig);
 document.getElementById('testEmailBtn').addEventListener('click', testEmail);
 loadEmailConfig().catch(e => toast(e.message, 'error'));
+
+/* ---------- MCP 服务 ---------- */
+async function loadMcpInfo() {
+  try {
+    const r = await api('/api/admin/mcp-info');
+    document.getElementById('mcp_enabled').checked = !!r.enabled;
+    document.getElementById('mcp_url').textContent = r.url;
+    document.getElementById('mcp_token').textContent = r.token;
+    document.getElementById('mcp_meta').textContent =
+      `共 ${r.tools} 个工具、${r.resources} 个资源；Token 可随时重置。`;
+    document.getElementById('mcp_copy_url').onclick = () => copyText(r.url);
+    document.getElementById('mcp_copy_token').onclick = () => copyText(r.token);
+    document.getElementById('mcp_example').textContent =
+`Claud Code:
+Claud mcp add --transport http alipay-pay ${r.url} --header "Authorization: Bearer ${r.token}"
+
+通用 MCP JSON（Cursor / 其他客户端）:
+{
+  "mcpServers": {
+    "alipay-pay": {
+      "type": "http",
+      "url": "${r.url}",
+      "headers": {"Authorization": "Bearer ${r.token}"}
+    }
+  }
+}`;
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.getElementById('mcp_enabled').addEventListener('change', async e => {
+  try {
+    await api('/api/admin/mcp-enabled', { method: 'POST', body: { enabled: e.target.checked } });
+    toast(e.target.checked ? 'MCP 服务已启用' : 'MCP 服务已关闭', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+    loadMcpInfo();
+  }
+});
+
+document.getElementById('mcp_reset_token').addEventListener('click', async () => {
+  if (!confirm('重置后旧 Token 立即失效，所有已接入的 Agent 需要更新 Token。确认继续？')) return;
+  try {
+    const r = await api('/api/admin/mcp-token/reset', { method: 'POST' });
+    document.getElementById('mcp_token').textContent = r.token;
+    toast('Token 已重置', 'success');
+    loadMcpInfo();
+  } catch (e) { toast(e.message, 'error'); }
+});
+
+loadMcpInfo();
 </script>
 {% endblock %}

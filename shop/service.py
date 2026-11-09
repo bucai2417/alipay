@@ -365,6 +365,29 @@ class ShopService:
             order = self._sync_payment_status(order)
         return {"code": 1, "msg": "SUCCESS", "order": self.public_order_view(order)}
 
+    def mark_paid_by_order_no(self, order_no):
+        """后台/MCP 补单：未支付的支付单先标记支付，否则直接补发。"""
+        order = self.db.get_order_by_no(order_no)
+        if not order:
+            return {"ok": False, "reason": "订单不存在"}
+        if order.get("status") not in ("pending", "failed", "paid"):
+            return {"ok": False, "reason": f"当前状态不可补单: {order.get('status')}"}
+
+        from alipay_pay.monitor import mark_paid
+        from alipay_pay.orders import OrderStore
+
+        pay_order = OrderStore().get_order(
+            out_trade_no=order.get("payment_out_trade_no")
+        )
+        if pay_order and pay_order["status"] == 0:
+            mark_paid(pay_order["id"], detected_by="admin")
+        else:
+            result = self.fulfill_order(order, notify=True)
+            if result.get("code") != 1 and result.get("msg") != "ALREADY_FULFILLED":
+                return {"ok": False, "reason": result.get("msg", "发货失败")}
+        fresh = self.db.get_order_by_no(order_no)
+        return {"ok": True, "order": self.public_order_view(fresh)}
+
     def refulfill(self, order_no):
         order = self.db.get_order_by_no(order_no)
         if not order:

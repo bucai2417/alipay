@@ -6,6 +6,7 @@
 
 import hashlib
 import io
+import json
 import os
 import shutil
 import sys
@@ -694,6 +695,110 @@ def main():
                  "/admin/api-docs"]:
         r = c.get(path)
         check(f"后台页面 {path}", r.status_code == 200, r.status_code)
+
+    # ================= MCP 服务 =================
+    from core.settings import get_mcp_settings, reset_mcp_token, set_mcp_enabled
+
+    mcp_token = get_mcp_settings()["token"]
+    mcp_headers = {"Authorization": f"Bearer {mcp_token}"}
+
+    def mcp_call(method, params=None, token="__default__"):
+        if token == "__default__":
+            token = mcp_token
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        return c.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                    "method": method, "params": params or {}},
+                      headers=headers)
+
+    def mcp_tool(name, args=None, token="__default__"):
+        return mcp_call("tools/call", {"name": name, "arguments": args or {}}, token=token)
+
+    def tool_text(resp):
+        result = resp.get_json().get("result") or {}
+        content = result.get("content") or []
+        return (content[0].get("text") if content else ""), result.get("isError")
+
+    r = mcp_call("initialize", token=None)
+    check("MCP 未授权拦截", r.status_code == 401, r.status_code)
+
+    r = mcp_call("initialize")
+    d = r.get_json()
+    check("MCP initialize", r.status_code == 200
+          and d.get("result", {}).get("protocolVersion")
+          and "tools" in d.get("result", {}).get("capabilities", {}), d)
+
+    r = c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+               headers=mcp_headers)
+    check("MCP initialized 通知", r.status_code == 202, r.status_code)
+
+    r = mcp_call("tools/list")
+    names = [t["name"] for t in r.get_json().get("result", {}).get("tools", [])]
+    check("MCP 工具列表", len(names) >= 35 and "create_product" in names
+          and "mark_order_paid" in names and "update_pay_config" in names, len(names))
+
+    r = mcp_tool("get_stats")
+    text, is_err = tool_text(r)
+    check("MCP get_stats", is_err is False and '"pay"' in text, text[:120])
+
+    r = mcp_tool("get_pay_config")
+    text, is_err = tool_text(r)
+    check("MCP 配置脱敏", is_err is False and "…" in text
+          and payload["private_key"] not in text, text[:120])
+
+    r = mcp_tool("create_product", {"name": "MCP测试商品", "price": 0.02,
+                                    "fulfill_mode": "stock", "status": 1})
+    product_data = json.loads(tool_text(r)[0])
+    check("MCP 创建商品", bool(product_data.get("id")), product_data)
+    mcp_product_id = product_data.get("id")
+
+    r = mcp_tool("import_cards", {"product_id": mcp_product_id,
+                                  "codes": ["MCP-1", "MCP-2"]})
+    check("MCP 导入卡密", tool_text(r)[1] is False)
+
+    r = mcp_tool("list_products", {"search": "MCP测试商品"})
+    listed = json.loads(tool_text(r)[0])
+    check("MCP 查询商品", listed.get("total") == 1, listed)
+
+    r = mcp_tool("update_product", {"product_id": mcp_product_id, "price": 0.03})
+    check("MCP 更新商品", json.loads(tool_text(r)[0]).get("price") == 0.03)
+
+    r = mcp_tool("delete_products", {"ids": [mcp_product_id]})
+    check("MCP 删除商品", json.loads(tool_text(r)[0]).get("deleted") == 1)
+
+    mcp_order = submit_order("MCP-PAY-1", "0.02")
+    r = mcp_tool("mark_order_paid", {"trade_no": mcp_order["trade_no"]})
+    check("MCP 补单", tool_text(r)[1] is False)
+    r = mcp_tool("get_order", {"trade_no": mcp_order["trade_no"]})
+    order_view = json.loads(tool_text(r)[0])
+    check("MCP 补单后已支付", order_view.get("status") == 1, order_view)
+
+    r = mcp_tool("list_tickets", {})
+    tickets = json.loads(tool_text(r)[0])
+    check("MCP 工单列表", tickets.get("total", 0) >= 1, tickets)
+    if tickets.get("tickets"):
+        tid = tickets["tickets"][0]["id"]
+        r = mcp_tool("reply_ticket", {"ticket_id": tid, "content": "MCP 回复测试"})
+        check("MCP 回复工单", tool_text(r)[1] is False)
+
+    r = mcp_call("resources/list")
+    uris = [x.get("uri") for x in r.get_json().get("result", {}).get("resources", [])]
+    check("MCP 资源列表", "alipay://readme" in uris, uris)
+    r = mcp_call("resources/read", {"uri": "alipay://readme"})
+    contents = r.get_json().get("result", {}).get("contents") or []
+    check("MCP 读取资源", bool(contents and contents[0].get("text")))
+
+    r = mcp_call("unknown/method")
+    check("MCP 未知方法", r.get_json().get("error", {}).get("code") == -32601)
+    r = mcp_tool("no_such_tool", {})
+    check("MCP 未知工具", tool_text(r)[1] is True)
+
+    old_token = mcp_token
+    mcp_token = reset_mcp_token()["token"]
+    check("MCP 旧 Token 失效", mcp_call("tools/list", token=old_token).status_code == 401)
+    check("MCP 新 Token 可用", mcp_call("tools/list").status_code == 200)
+    set_mcp_enabled(False)
+    check("MCP 禁用拦截", mcp_call("tools/list").status_code == 403)
+    set_mcp_enabled(True)
 
     # ---------- 商城关闭 ----------
     c.post("/api/admin/shop-settings", json={"enabled": False})
