@@ -11,7 +11,7 @@ from datetime import timedelta
 from flask import (Flask, Response, jsonify, render_template, request,
                    send_from_directory)
 
-from config import DATA_DIR, SECRET_KEY
+from config import APP_VERSION, DATA_DIR, SECRET_KEY
 
 
 def _load_secret_key() -> str:
@@ -47,6 +47,10 @@ def create_app() -> Flask:
         SESSION_COOKIE_SAMESITE="Lax",
         PERMANENT_SESSION_LIFETIME=timedelta(days=7),
     )
+
+    @app.context_processor
+    def _inject_app_info():
+        return {"app_version": APP_VERSION}
 
     @app.after_request
     def _security_headers(resp):

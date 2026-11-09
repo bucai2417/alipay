@@ -11,6 +11,7 @@ from alipay_pay.monitor import request_quick_check
 from alipay_pay.orders import OrderStore
 from alipay_pay.qr import generate_qr_base64
 from alipay_pay.transfer import AlipayTransfer
+from config import APP_VERSION
 from core.logger import get_logger
 from core.settings import is_configured, load_alipay_config, payment_readiness
 
@@ -253,6 +254,7 @@ def health():
         database = {"status": f"ERROR: {e}"}
 
     checks = {
+        "version": APP_VERSION,
         "configured": is_configured(cfg),
         "payment_ready": ready,
         "payment_reason": reason,

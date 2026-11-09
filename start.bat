@@ -3,6 +3,7 @@ title Alipay CodePay Server
 cd /d "%~dp0"
 
 set "PORT=5000"
+if defined ALIPAY_PORT set "PORT=%ALIPAY_PORT%"
 set "VENV=.venv"
 set "PYEXE=%VENV%\Scripts\python.exe"
 
@@ -26,20 +27,38 @@ if not errorlevel 1 (
 )
 
 rem ---------- 2) virtual env ----------
-if not exist "%PYEXE%" (
-    echo [1/3] Creating virtual environment...
-    set "PYCMD=python"
-    where py >nul 2>&1 && set "PYCMD=py -3"
-    where python >nul 2>&1
-    if errorlevel 1 (
-        where py >nul 2>&1
-        if errorlevel 1 goto :nopython
-    )
-    %PYCMD% -m venv "%VENV%"
-    if errorlevel 1 goto :err
-) else (
+if exist "%PYEXE%" (
     echo [1/3] Virtual environment OK
+    "%PYEXE%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Existing .venv uses Python older than 3.10.
+        echo         Delete the .venv folder and run start.bat again.
+        pause
+        exit /b 1
+    )
+    goto :deps
 )
+
+echo [1/3] Creating virtual environment...
+set "PYCMD="
+where py >nul 2>&1
+if not errorlevel 1 (
+    py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+    if not errorlevel 1 set "PYCMD=py -3"
+)
+if not defined PYCMD (
+    where python >nul 2>&1
+    if not errorlevel 1 (
+        python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+        if not errorlevel 1 set "PYCMD=python"
+    )
+)
+if not defined PYCMD goto :nopython
+
+%PYCMD% -m venv "%VENV%"
+if errorlevel 1 goto :err
+
+:deps
 
 rem ---------- 3) dependencies ----------
 "%PYEXE%" -c "import flask, requests, qrcode, PIL, cryptography, rsa, alipay, bleach, waitress" >nul 2>&1
@@ -73,7 +92,8 @@ pause
 exit /b %CODE%
 
 :nopython
-echo [ERROR] Python not found. Install Python 3.9+ and check "Add Python to PATH".
+echo [ERROR] Python 3.10 or newer was not found in PATH.
+echo         Install Python 3.10+ and check "Add Python to PATH".
 echo         Download: https://www.python.org/downloads/
 echo.
 pause

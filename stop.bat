@@ -3,6 +3,7 @@ title Stop Alipay CodePay Server
 cd /d "%~dp0"
 
 set "PORT=5000"
+if defined ALIPAY_PORT set "PORT=%ALIPAY_PORT%"
 set "FOUND="
 
 echo ============================================

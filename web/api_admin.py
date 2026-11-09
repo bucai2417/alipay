@@ -15,7 +15,7 @@ from alipay_pay.codepay import resolve_qr_path
 from alipay_pay.monitor import mark_paid, monitoring_status, run_monitoring_cycle
 from alipay_pay.orders import OrderStore
 from alipay_pay.protocol import generate_sign
-from config import BASE_DIR, DATA_DIR
+from config import APP_VERSION, BASE_DIR, DATA_DIR
 from core import mailer
 from core.feedback_files import save_feedback_file
 from core.html_utils import clean_description
@@ -143,7 +143,7 @@ def stats():
 @login_required
 def health_detail():
     cfg = load_alipay_config()
-    checks = {"dependencies": {}, "config": {}, "overall": True}
+    checks = {"version": APP_VERSION, "dependencies": {}, "config": {}, "overall": True}
 
     for name, label in (("alipay", "alipay-sdk-python"), ("qrcode", "qrcode"),
                         ("PIL", "Pillow"), ("cryptography", "cryptography"),

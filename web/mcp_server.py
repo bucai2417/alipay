@@ -27,6 +27,7 @@ from config import BASE_DIR
 from core import mailer
 from core.html_utils import clean_description
 from core.images import save_image_bytes
+from config import APP_VERSION
 from core.logger import get_logger
 from core.reports import shop_orders_for_export
 from core.settings import (
@@ -49,7 +50,7 @@ logger = get_logger("mcp")
 mcp_bp = Blueprint("mcp", __name__)
 
 PROTOCOL_VERSION = "2025-03-26"
-SERVER_INFO = {"name": "alipay-pay-mcp", "version": "1.0.0"}
+SERVER_INFO = {"name": "alipay-pay-mcp", "version": APP_VERSION}
 SERVER_INSTRUCTIONS = (
     "码支付与卡密商城管理服务。可查询/管理商品、卡密、支付订单、商城订单、客服工单、"
     "支付配置、邮件配置与商城设置。补单、删除、修改配置等操作会产生真实影响，请谨慎调用。"

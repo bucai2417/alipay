@@ -1,0 +1,57 @@
+# 码支付 · 卡密商城 —— Docker Compose 部署配置
+#
+# 快速开始：
+#   cp .env.example .env      # 按需修改端口与密钥
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# 说明：
+# - 运行数据（SQLite、加密密钥、二维码、上传与附件、日志）持久化在宿主机 ./data；
+# - 容器内固定监听 5000，宿主机端口由 .env 的 ALIPAY_PORT 控制（默认 5000）；
+# - 支付监控线程随主进程启动，同一收款账号请只运行一个实例。
+
+name: alipay-pay
+
+services:
+  alipay-pay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: alipay-pay:1.0.0
+    container_name: alipay-pay
+    restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
+    ports:
+      - "${ALIPAY_PORT:-5000}:5000"
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      ALIPAY_HOST: "0.0.0.0"
+      ALIPAY_PORT: "5000"
+      ALIPAY_DATA_DIR: "/app/data"
+      ALIPAY_MONITOR: "${ALIPAY_MONITOR:-1}"
+      ALIPAY_DEBUG: "${ALIPAY_DEBUG:-0}"
+      ALIPAY_SECRET_KEY: "${ALIPAY_SECRET_KEY:-}"
+      ALIPAY_ENCRYPT_KEY: "${ALIPAY_ENCRYPT_KEY:-}"
+      ALIPAY_MONITOR_IN_WSGI: "${ALIPAY_MONITOR_IN_WSGI:-1}"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    # 需要限制资源时取消注释（docker compose v2 支持 deploy.resources）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "1.0"
+    #       memory: 512M

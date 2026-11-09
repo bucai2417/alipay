@@ -5,5 +5,8 @@ venv/
 data/
 data_*/
 *.log
+.env
+.env.*
+!.env.example
 .idea/
 .vscode/

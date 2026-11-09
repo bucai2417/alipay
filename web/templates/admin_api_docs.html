@@ -343,7 +343,7 @@ def generate_sign(params: dict, merchant_key: str) -> str:
     <section class="card doc-card" id="api-health">
       <h2><span class="method get">GET</span> 健康检查</h2>
       <div class="endpoint"><span class="method get">GET</span><span class="path">/health</span></div>
-      <p>返回依赖、配置、数据库与收款就绪状态，可用于监控探测。</p>
+      <p>返回依赖、配置、数据库与收款就绪状态，可用于监控探测；<span class="inline-code">version</span> 字段为当前系统版本（{{ app_version }}）。</p>
     </section>
 
     <!-- 快速接入 -->
