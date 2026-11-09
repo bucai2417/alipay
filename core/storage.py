@@ -156,7 +156,8 @@ class Database:
         if c is None:
             c = sqlite3.connect(self.db_path, timeout=30)
             c.row_factory = sqlite3.Row
-            c.execute("PRAGMA journal_mode=WAL")
+            # journal_mode=WAL 已在初始化时设置（数据库级持久生效），
+            # 新连接不再重复设置，避免多线程首次建连时争抢排他锁。
             c.execute("PRAGMA busy_timeout=30000")
             c.execute("PRAGMA foreign_keys=ON")
             self._local.conn = c
@@ -165,6 +166,8 @@ class Database:
     def _init_schema(self):
         """建表；旧库缺列时做增量兼容。"""
         c = self.conn()
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
         c.executescript(SCHEMA)
         # 旧库兼容：codepay_orders 缺列
         cols = {r[1] for r in c.execute("PRAGMA table_info(codepay_orders)").fetchall()}

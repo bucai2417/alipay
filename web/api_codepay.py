@@ -7,7 +7,7 @@ import os
 from flask import Blueprint, jsonify, redirect, render_template, request, send_file, url_for
 
 from alipay_pay.codepay import CodePay, resolve_qr_path
-from alipay_pay.monitor import run_monitoring_cycle
+from alipay_pay.monitor import request_quick_check
 from alipay_pay.orders import OrderStore
 from alipay_pay.qr import generate_qr_base64
 from alipay_pay.transfer import AlipayTransfer
@@ -104,12 +104,7 @@ def codepay_api():
         result = codepay.query_order(pid, params.get("key", ""), out_trade_no,
                                      validate_key=bool(params.get("key")))
         if result.get("code") == 1 and result.get("status") == 0:
-            try:
-                run_monitoring_cycle(cleanup=False)
-                result = codepay.query_order(pid, params.get("key", ""), out_trade_no,
-                                             validate_key=bool(params.get("key")))
-            except Exception:
-                pass
+            request_quick_check()
         return jsonify(result)
 
     if action == "orders":
@@ -172,11 +167,7 @@ def codepay_status(out_trade_no):
     if not order:
         return jsonify({"code": -1, "msg": "订单不存在"}), 404
     if order["status"] == 0:
-        try:
-            run_monitoring_cycle(cleanup=False)
-        except Exception:
-            pass
-        order = OrderStore().get_order(order_id=order["id"]) or order
+        request_quick_check()
     return jsonify({
         "code": 1,
         "status": order["status"],
@@ -227,11 +218,7 @@ def pay_status(trade_no):
     if not order:
         return jsonify({"code": -1, "msg": "订单不存在"}), 404
     if order["status"] == 0:
-        try:
-            run_monitoring_cycle(cleanup=False)
-        except Exception:
-            pass
-        order = OrderStore().get_order(order_id=trade_no) or order
+        request_quick_check()
     shop_order = None
     if str(order.get("out_trade_no") or "").startswith("SHOP_"):
         from shop.service import ShopService

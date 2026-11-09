@@ -37,5 +37,19 @@ if __name__ == "__main__":
         from alipay_pay.monitor import MonitorThread
 
         MonitorThread().start()
-    logger.info("服务已启动: http://%s:%s  （后台: /admin/）", HOST, PORT)
-    app.run(host=HOST, port=PORT, debug=DEBUG, threaded=True, use_reloader=DEBUG)
+
+    if DEBUG:
+        logger.info("调试模式启动: http://%s:%s  （后台: /admin/）", HOST, PORT)
+        app.run(host=HOST, port=PORT, debug=True, threaded=True, use_reloader=True)
+    else:
+        try:
+            from waitress import serve
+
+            logger.info("服务已启动（waitress，16 线程）: http://%s:%s  （后台: /admin/）",
+                        HOST, PORT)
+            serve(app, host=HOST, port=PORT, threads=16,
+                  channel_timeout=120, cleanup_interval=30)
+        except ImportError:
+            logger.warning("waitress 未安装，回退到 Flask 开发服务器（并发能力有限）")
+            logger.info("服务已启动: http://%s:%s  （后台: /admin/）", HOST, PORT)
+            app.run(host=HOST, port=PORT, debug=False, threaded=True)

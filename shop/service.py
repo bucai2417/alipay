@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import secrets
+import threading
 import time
 from datetime import datetime
 
@@ -23,6 +24,9 @@ from .db import ShopDB
 from .generator import generate_codes
 
 logger = get_logger("shop.service")
+
+# 发货串行锁：避免监控、回调、补单并发时重复扣库存/重复发货
+_fulfill_lock = threading.Lock()
 
 
 def _now() -> str:
@@ -213,6 +217,11 @@ class ShopService:
     # ---------- 发货 ----------
 
     def fulfill_order(self, order, notify=True):
+        """幂等发货（全局串行，防止并发重复发货）。"""
+        with _fulfill_lock:
+            return self._fulfill_order_locked(order, notify)
+
+    def _fulfill_order_locked(self, order, notify=True):
         if not order:
             return {"code": -1, "msg": "订单不存在"}
         order = self.db.get_order_by_id(order["id"])
@@ -273,6 +282,12 @@ class ShopService:
         return {"code": 1, "msg": "SUCCESS", "order": self.public_order_view(order)}
 
     def _send_buyer_email(self, order, payload):
+        """异步发送买家邮件，不阻塞发货流程。"""
+        from core.tasks import submit_mail
+
+        submit_mail(self._send_buyer_email_sync, dict(order), payload)
+
+    def _send_buyer_email_sync(self, order, payload):
         """发货后向买家邮箱发送订单与卡密（未启用时记录状态）。"""
         email_addr = str(order.get("contact") or "").strip()
         if not mailer.is_email(email_addr):

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime
 
 from core.logger import get_logger
@@ -20,6 +21,9 @@ from .qr import generate_qr_base64
 from .transfer import AlipayTransfer
 
 logger = get_logger("alipay.codepay")
+
+# 经营码唯一金额分配 + 落库必须原子，避免并发下单拿到相同金额
+_amount_lock = threading.Lock()
 
 
 def resolve_qr_path(qr_path: str) -> str:
@@ -138,30 +142,39 @@ class CodePay:
             elif not str(self.config.get("transfer_user_id") or "").strip():
                 raise ValueError("未配置转账收款账号 userId，请在后台支付配置中填写")
 
+            def _insert_order(trade_no, amount):
+                self.store.insert_order(
+                    order_id=trade_no,
+                    out_trade_no=params["out_trade_no"],
+                    order_type=params["type"],
+                    pid=params["pid"],
+                    name=params["name"],
+                    price=original_amount,
+                    payment_amount=amount,
+                    status=0,
+                    notify_url=params.get("notify_url", ""),
+                    return_url=params.get("return_url", ""),
+                    sitename=params.get("sitename", ""),
+                    source=source,
+                )
+
             payment_amount = original_amount
             if business_qr_mode:
                 offset = float(qr_cfg.get("amount_offset") or 0.01)
                 timeout = int(self.config.get("order_timeout") or 300)
-                payment_amount = self.store.allocate_unique_amount(original_amount, offset, timeout)
-                if payment_amount != original_amount:
-                    logger.info("金额已调整为 %s（原 %s）: %s",
-                                payment_amount, original_amount, params["out_trade_no"])
-
-            trade_no = gen_trade_no()
-            self.store.insert_order(
-                order_id=trade_no,
-                out_trade_no=params["out_trade_no"],
-                order_type=params["type"],
-                pid=params["pid"],
-                name=params["name"],
-                price=original_amount,
-                payment_amount=payment_amount,
-                status=0,
-                notify_url=params.get("notify_url", ""),
-                return_url=params.get("return_url", ""),
-                sitename=params.get("sitename", ""),
-                source=source,
-            )
+                # 并发下单时保证金额唯一且订单落库在同一个临界区
+                with _amount_lock:
+                    payment_amount = self.store.allocate_unique_amount(
+                        original_amount, offset, timeout
+                    )
+                    if payment_amount != original_amount:
+                        logger.info("金额已调整为 %s（原 %s）: %s",
+                                    payment_amount, original_amount, params["out_trade_no"])
+                    trade_no = gen_trade_no()
+                    _insert_order(trade_no, payment_amount)
+            else:
+                trade_no = gen_trade_no()
+                _insert_order(trade_no, payment_amount)
 
             response = {
                 "code": 1,

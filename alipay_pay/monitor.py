@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import os
 import threading
+import time
 from datetime import datetime
 
 from core.logger import get_logger
@@ -63,6 +65,8 @@ def _shop_service():
 
 
 def _after_paid(order: dict, detected_by: str) -> None:
+    from core.tasks import submit_background
+
     codepay = CodePay()
     out_trade_no = str(order.get("out_trade_no") or "")
 
@@ -73,15 +77,9 @@ def _after_paid(order: dict, detected_by: str) -> None:
         except Exception as e:
             logger.warning("商城自动发货失败 %s: %s", out_trade_no, e)
 
-    try:
-        codepay.send_notification(order)
-    except Exception as e:
-        logger.warning("商户回调发送失败 %s: %s", out_trade_no, e)
-
-    try:
-        PushPlusNotifier(codepay.config).payment_success(order, detected_by)
-    except Exception as e:
-        logger.warning("PushPlus 通知失败 %s: %s", out_trade_no, e)
+    # 商户回调与 PushPlus 放到后台线程，避免阻塞监控循环
+    submit_background(codepay.send_notification, order)
+    submit_background(PushPlusNotifier(codepay.config).payment_success, order, detected_by)
 
 
 def mark_paid(order_id: str, detected_by: str = "manual") -> dict:
@@ -143,21 +141,20 @@ def _process_bills_amount_mode(bills, cfg) -> int:
 
 
 def _retry_notifications(cfg) -> int:
-    """重发到期的商户回调（失败退避重试）。"""
+    """重发到期的商户回调（异步提交，不阻塞监控循环）。"""
     store = OrderStore()
     due = store.find_due_notifications(20)
     if not due:
         return 0
+    from core.tasks import submit_background
+
     codepay = CodePay(cfg)
     for order in due:
-        try:
-            codepay.send_notification(order)
-        except Exception as e:
-            logger.warning("重发回调失败 %s: %s", order.get("out_trade_no"), e)
+        submit_background(codepay.send_notification, order)
     return len(due)
 
 
-def run_monitoring_cycle(cleanup: bool = True) -> dict:
+def _run_monitoring_cycle(cleanup: bool = True) -> dict:
     cfg = load_alipay_config()
     start = datetime.now()
 
@@ -204,6 +201,47 @@ def run_monitoring_cycle(cleanup: bool = True) -> dict:
 
     elapsed = (datetime.now() - start).total_seconds()
     return {"ok": True, "bills": len(bills), "matched": matched, "elapsed": elapsed}
+
+
+# 全局监控锁：周期检查、快速检查、后台按钮共用，避免重复查询账单
+_cycle_lock = threading.Lock()
+
+# 快速检查节流：多人同时支付时，最多每 3 秒触发一次后台账单查询
+_quick_lock = threading.Lock()
+_quick_state = {"last": 0.0, "running": False}
+
+
+def run_monitoring_cycle(cleanup: bool = True) -> dict:
+    if not _cycle_lock.acquire(blocking=False):
+        return {"ok": True, "skipped": "busy", "matched": 0, "bills": 0}
+    try:
+        return _run_monitoring_cycle(cleanup)
+    finally:
+        _cycle_lock.release()
+
+
+def request_quick_check(min_interval: float = 3.0) -> bool:
+    """请求一次异步账单检查（节流，不阻塞当前请求）。"""
+    if os.getenv("ALIPAY_DISABLE_QUICK_CHECK") == "1":
+        return False
+    now = time.time()
+    with _quick_lock:
+        if _quick_state["running"] or now - _quick_state["last"] < min_interval:
+            return False
+        _quick_state["last"] = now
+        _quick_state["running"] = True
+
+    def _job():
+        try:
+            run_monitoring_cycle(cleanup=False)
+        except Exception as e:
+            logger.warning("快速检查失败: %s", e)
+        finally:
+            with _quick_lock:
+                _quick_state["running"] = False
+
+    threading.Thread(target=_job, name="quick-check", daemon=True).start()
+    return True
 
 
 class MonitorThread(threading.Thread):

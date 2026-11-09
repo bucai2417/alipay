@@ -9,6 +9,7 @@ import io
 import os
 import shutil
 import sys
+import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEST_DATA = os.path.join(BASE, "data_selftest")
@@ -16,6 +17,7 @@ if os.path.isdir(TEST_DATA):
     shutil.rmtree(TEST_DATA, ignore_errors=True)
 os.environ["ALIPAY_DATA_DIR"] = TEST_DATA
 os.environ["ALIPAY_MONITOR"] = "0"
+os.environ["ALIPAY_DISABLE_QUICK_CHECK"] = "1"
 sys.path.insert(0, BASE)
 
 from web.factory import create_app  # noqa: E402
@@ -32,6 +34,15 @@ def check(name, cond, detail=""):
     else:
         FAIL += 1
         print(f"[FAIL] {name} {detail}")
+
+
+def wait_until(fn, timeout=6.0, interval=0.1):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if fn():
+            return True
+        time.sleep(interval)
+    return False
 
 
 def make_keypair():
@@ -422,10 +433,11 @@ def main():
         pl["act"] = "submit"
         return c.post("/api/codepay", data=pl).get_json()
 
-    # 成功回调
+    # 成功回调（异步发送，等待到达）
     cb = submit_order("CB-0001", "0.06", f"http://127.0.0.1:{cb_port}/cb")
     check("回调用例订单", cb.get("code") == 1, cb)
     mark_paid(cb["trade_no"], detected_by="selftest")
+    wait_until(lambda: len(_CallbackHandler.received) >= 1, timeout=8)
     check("回调已收到", len(_CallbackHandler.received) == 1, _CallbackHandler.received)
     if _CallbackHandler.received:
         data = _CallbackHandler.received[-1]
@@ -440,12 +452,16 @@ def main():
         check("回调签名正确",
               data.get("sign") == hashlib.md5((raw + key).encode()).hexdigest(),
               data.get("sign"))
+    wait_until(lambda: (OrderStore().get_order(order_id=cb["trade_no"]) or {})
+               .get("notify_status") == 1, timeout=6)
     order_cb = OrderStore().get_order(order_id=cb.get("trade_no"))
     check("回调状态已记录", bool(order_cb) and order_cb.get("notify_status") == 1, order_cb)
 
-    # 失败回调自动登记重试
+    # 失败回调自动登记重试（异步）
     fail = submit_order("CB-FAIL", "0.06", "http://127.0.0.1:9/cb")
     mark_paid(fail["trade_no"], detected_by="selftest")
+    wait_until(lambda: (OrderStore().get_order(order_id=fail["trade_no"]) or {})
+               .get("notify_status") == 2, timeout=8)
     order_fail = OrderStore().get_order(order_id=fail["trade_no"])
     check("回调失败登记重试", bool(order_fail)
           and order_fail.get("notify_status") == 2
@@ -539,6 +555,60 @@ def main():
 
     server.shutdown()
 
+    # ================= 并发能力 =================
+    from concurrent.futures import ThreadPoolExecutor
+
+    def submit_concurrent(i):
+        cl = app.test_client()
+        pl = {"pid": pid, "type": "alipay", "out_trade_no": f"CONC-{i}",
+              "name": "并发下单", "money": "0.02", "format": "json"}
+        pl["sign"] = sign(pl)
+        pl["act"] = "submit"
+        return cl.post("/api/codepay", data=pl).get_json()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        conc = list(pool.map(submit_concurrent, range(10)))
+    ok_conc = [r for r in conc if r.get("code") == 1]
+    amounts = [r.get("payment_amount") for r in ok_conc]
+    check("并发下单全部成功", len(ok_conc) == 10, conc)
+    check("并发下单金额唯一", len(set(amounts)) == 10, amounts)
+
+    conc_pay = submit_order("CONC-PAY", "0.02")
+
+    def pay_once(_):
+        return mark_paid(conc_pay["trade_no"], detected_by="concurrent")
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        pays = list(pool.map(pay_once, range(5)))
+    check("并发补单仅生效一次", sum(1 for r in pays if r.get("changed")) == 1, pays)
+
+    conc_product = c.post("/api/admin/products", json={
+        "name": "并发发货商品", "price": 0.01, "fulfill_mode": "stock", "status": 1,
+    }).get_json()["product"]
+    c.post(f"/api/admin/products/{conc_product['id']}/cards/import",
+           json={"text": "CONC-CARD-1\nCONC-CARD-2\nCONC-CARD-3"})
+    rr = c.post("/api/shop/order", json={
+        "token": token, "product_id": conc_product["id"], "qty": 1,
+        "contact": "conc@example.com"})
+    cd = rr.get_json()
+    check("并发发货订单创建", cd.get("code") == 1, cd)
+
+    from shop.service import ShopService as _ShopService
+
+    svc = _ShopService()
+
+    def fulfill_once(_):
+        ord_obj = svc.db.get_order_by_no(cd.get("order_no"))
+        return svc.fulfill_order(ord_obj, notify=True)
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        fres = list(pool.map(fulfill_once, range(5)))
+    ok_f = [x for x in fres if x.get("code") == 1 or x.get("msg") == "ALREADY_FULFILLED"]
+    check("并发发货全部幂等", len(ok_f) == 5, fres)
+    final_o = svc.db.get_order_by_no(cd.get("order_no"))
+    lines = [x for x in (final_o.get("card_payload") or "").splitlines() if x]
+    check("并发发货只发一份", len(lines) == 1, lines)
+
     # ================= 邮件通知 =================
     from unittest.mock import patch
 
@@ -561,9 +631,12 @@ def main():
             mark_paid(dd["trade_no"], detected_by="selftest")
         return dd
 
-    # 邮件未启用时的订单状态
+    # 邮件未启用时的订单状态（异步更新）
     off = buy_mail_product("mail-off@example.com")
     check("邮件测试订单1", off.get("code") == 1, off)
+    if off.get("order_no"):
+        wait_until(lambda: (ShopService().db.get_order_by_no(off["order_no"]) or {})
+                   .get("email_status") == 3, timeout=6)
     o_off = (ShopService().db.get_order_by_no(off.get("order_no"))
              if off.get("order_no") else None)
     check("未启用邮件状态", bool(o_off) and o_off.get("email_status") == 3, o_off)
@@ -586,6 +659,9 @@ def main():
         inst = mock_ssl.return_value
         on = buy_mail_product("mail-on@example.com")
         check("邮件测试订单2", on.get("code") == 1, on)
+        if on.get("order_no"):
+            wait_until(lambda: (ShopService().db.get_order_by_no(on["order_no"]) or {})
+                       .get("email_status") in (1, 2), timeout=10)
         o_on = (ShopService().db.get_order_by_no(on.get("order_no"))
                 if on.get("order_no") else None)
         check("发货邮件已发送", bool(o_on) and o_on.get("email_status") == 1

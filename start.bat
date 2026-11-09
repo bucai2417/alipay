@@ -42,7 +42,7 @@ if not exist "%PYEXE%" (
 )
 
 rem ---------- 3) dependencies ----------
-"%PYEXE%" -c "import flask, requests, qrcode, PIL, cryptography, rsa, alipay" >nul 2>&1
+"%PYEXE%" -c "import flask, requests, qrcode, PIL, cryptography, rsa, alipay, bleach, waitress" >nul 2>&1
 if errorlevel 1 (
     echo [2/3] Installing dependencies, first run may take a few minutes...
     "%PYEXE%" -m pip install --upgrade pip
